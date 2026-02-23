@@ -7,3 +7,6 @@ stable-env
 *.pyc
 *.pyo
 *.pyd
+*frontend/
+*prot_backend/
+*__pycache__/
