@@ -1,5 +1,9 @@
 stable-env
 .stable-env/
 .env
-frontend/
-prot_backend
+.frontend/
+.prot_backend/
+*/__pycache__/
+*.pyc
+*.pyo
+*.pyd
