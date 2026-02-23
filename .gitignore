@@ -11,3 +11,5 @@ stable-env
 *prot_backend/
 *__pycache__/
 *.env
+*db.sqlite3
+
