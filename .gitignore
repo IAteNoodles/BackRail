@@ -1,2 +1,5 @@
 stable-env
 .stable-env/
+.env
+frontend/
+prot_backend
