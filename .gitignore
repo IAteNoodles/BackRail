@@ -10,3 +10,4 @@ stable-env
 *frontend/
 *prot_backend/
 *__pycache__/
+*.env
