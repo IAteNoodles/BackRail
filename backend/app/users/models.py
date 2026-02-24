@@ -15,9 +15,19 @@ class UserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
+    def create_staff(self, HRMS_ID, email=None, password=None, phone_no=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        return self.create_user(HRMS_ID, email, phone_no, password, **extra_fields)
+
     def create_superuser(self, HRMS_ID, email=None, password=None, phone_no=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
+
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError('Superuser must have is_staff=True.')
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+
         return self.create_user(HRMS_ID, email, phone_no, password, **extra_fields)
 
 class User(AbstractUser):
@@ -25,6 +35,7 @@ class User(AbstractUser):
     HRMS_ID = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True, blank=True, null=True, default=None)
     phone_number = models.CharField(max_length=10, blank=True, null=True, unique=True, default=None)
+    user_status = models.CharField(max_length=10, choices=[('pending', 'Pending'), ('accepted', 'Accepted'), ('rejected', 'Rejected')], default='pending')
     USERNAME_FIELD = 'HRMS_ID'
     REQUIRED_FIELDS = ['email']
     objects = UserManager()
