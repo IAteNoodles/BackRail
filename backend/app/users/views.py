@@ -6,11 +6,11 @@ from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import UntypedToken
 
-from .serialzers import RegisterSerializer
+from .serialzers import UserSerializer
 from .auth_serializers import HRMSTokenSerializer
 
 import logging
-from .models import User
+from .models import *
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 
@@ -22,7 +22,7 @@ class RegisterView(APIView):
 
     def post(self, request):
         logger.info(f"Incoming registration for HRMS_ID: {request.data.get('HRMS_ID')}")
-        serializer = RegisterSerializer(data=request.data)
+        serializer = UserSerializer(data=request.data)
 
         if serializer.is_valid():
             user = serializer.save()
@@ -135,4 +135,26 @@ class UpdateUserStatusView(APIView):
         user.save()
         logger.info(f"Updated user {HRMS_ID} status to {status_value}")
         return Response({"message": f"User {HRMS_ID} status updated to {status_value}"}, status=status.HTTP_200_OK)
+        
+class CreatePost(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = User.objects.get(HRMS_ID=request.data.get("HRMS_ID"))
+        post_type = request.data.get("post_type", "comment")
+        parent_id = request.data.get("parent_id", None)
+        content = request.data.get("content", "")
+        document_id = request.data.get("document_id", None)
+
+        post = Post.objects.create(
+            user=user,
+            post_type=post_type,
+            content=content,
+            document_id=document_id,
+            parent_id=parent_id
+        )
+        logger.info(f"User {user.HRMS_ID} created a new post with ID {post.id}")
+        return Response({"message": "Post created successfully", "post_id": post.id}, status=status.HTTP_201_CREATED)
+
+
         

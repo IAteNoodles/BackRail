@@ -40,3 +40,34 @@ class User(AbstractUser):
     REQUIRED_FIELDS = ['email']
     objects = UserManager()
 
+class Category(models.Model):
+    name = models.CharField(max_length=255, unique=True)
+    def __str__(self):
+        return self.name
+
+class Document(models.Model):
+    document_id = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+    version = models.CharField(max_length=50)
+    link = models.URLField()
+    internal_link = models.URLField()
+    category = models.ManyToManyField('Category', related_name='documents')
+    last_updated = models.DateTimeField(auto_now=True)
+    def __str__(self):
+        return f"{self.name} (v{self.version})"
+
+class Post(models.Model):
+    POST_TYPES = [
+        ('comment', 'Comment'),
+        ('feedback', 'Feedback')
+    ]
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='posts')
+    parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies')
+    post_type = models.CharField(choices=POST_TYPES, max_length=20, default='comment')
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    document_id = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='posts', null=False, blank=False)
+    def __str__(self):
+        return f"{self.post_type} by {self.user.HRMS_ID} at {self.created_at}"
+    
+
