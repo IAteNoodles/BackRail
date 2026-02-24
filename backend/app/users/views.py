@@ -9,7 +9,7 @@ from .serialzers import PostSerializer, UserSerializer, DocumentSerializer
 from .auth_serializers import HRMSTokenSerializer
 
 import logging
-from .models import User, Post
+from .models import Document, User, Post
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 
@@ -138,3 +138,31 @@ class CreateDocument(APIView):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+class DocumentListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        document_ids = request.query_params.get("document_ids")
+        download = request.query_params.get("download", False)
+
+        if document_ids:
+            documents = Document.objects.filter(document_id__in=document_ids.split(','))
+        else:
+            documents = Document.objects.none()
+
+        serializer = DocumentSerializer(documents, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+class PostListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        document_id = request.query_params.get("document_id")
+        if not document_id:
+            return Response({"error": "document_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        posts = Post.objects.filter(document__document_id=document_id)
+        serializer = PostSerializer(posts, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    

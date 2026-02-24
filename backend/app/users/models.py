@@ -66,7 +66,7 @@ class Post(models.Model):
     post_type = models.CharField(choices=POST_TYPES, max_length=20, default='comment')
     content = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
-    document_id = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='posts', null=False, blank=False)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='posts', null=False, blank=False)
     def __str__(self):
         return f"{self.post_type} by {self.user.HRMS_ID} at {self.created_at}"
     

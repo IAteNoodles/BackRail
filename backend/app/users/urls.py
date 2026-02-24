@@ -12,4 +12,6 @@ urlpatterns = [
     path('update_status/', UpdateUserStatusView.as_view(), name='update-user-status'),
     path('create_document/', CreateDocument.as_view(), name='create-document'),
     path('create_post/', CreatePost.as_view(), name='create-post'),
+    path('documents/', views.DocumentListView.as_view(), name='document-list'),
+    path('posts/', views.PostListView.as_view(), name='post-list'),
     ]
