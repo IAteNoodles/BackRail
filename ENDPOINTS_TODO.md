@@ -3,7 +3,7 @@
 This checklist tracks the implementation of backend services as described in the [BackRail V1-1.pdf](BackRail%20V1-1.pdf) documentation.
 
 ## 🔐 Authentication & Session Management
-- [ ] **User Registration** (`POST /register`)
+- [x] **User Registration** (`POST /register`)
   - [ ] Implement registration with optional email and default `PENDING` status.
   - [ ] Fields: `Name`, `HRMS_ID`, `Password`, `Email` (Optional).
 - [ ] **User Login** (`POST /login`)
