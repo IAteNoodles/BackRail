@@ -1,15 +1,55 @@
-stable-env
-.stable-env/
-.env
-.frontend/
-.prot_backend/
+# Python
+__pycache__/
 */__pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+stable-env/
+.stable-env/
+venv/
+.venv/
+env/
+
+# Django
+*.sqlite3
+*db.sqlite3
+media/
+staticfiles/
+
+# Environment
+.env
+*.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Project-specific
+.frontend/
+.prot_backend/
 *frontend/
 *prot_backend/
-*__pycache__/
-*.env
-*db.sqlite3
 
