@@ -1,25 +1,27 @@
 from django.db import models
 from django.contrib.auth.models import BaseUserManager, AbstractUser
+from django.core.validators import RegexValidator
+from django.utils import timezone
 
 # Create your models here.
 
 class UserManager(BaseUserManager):
-    def create_user(self, HRMS_ID, email=None, phone_no=None, password = None, **extra_fields):
+    def create_user(self, HRMS_ID, password=None, email=None, phone_number=None, **extra_fields):
         if not HRMS_ID:
             raise ValueError("Users must have an HRMS ID")
         if email:
             email = self.normalize_email(email)
         
-        user = self.model(HRMS_ID=HRMS_ID, email=email, phone_number=phone_no, **extra_fields)
+        user = self.model(HRMS_ID=HRMS_ID, email=email, phone_number=phone_number, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_staff(self, HRMS_ID, email=None, password=None, phone_no=None, **extra_fields):
+    def create_staff(self, HRMS_ID, email=None, password=None, phone_number=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
-        return self.create_user(HRMS_ID, email, phone_no, password, **extra_fields)
+        return self.create_user(HRMS_ID, password=password, email=email, phone_number=phone_number, **extra_fields)
 
-    def create_superuser(self, HRMS_ID, email=None, password=None, phone_no=None, **extra_fields):
+    def create_superuser(self, HRMS_ID, email=None, password=None, phone_number=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
 
@@ -28,17 +30,23 @@ class UserManager(BaseUserManager):
         if extra_fields.get('is_superuser') is not True:
             raise ValueError('Superuser must have is_superuser=True.')
 
-        return self.create_user(HRMS_ID, email, phone_no, password, **extra_fields)
+        return self.create_user(HRMS_ID, password=password, email=email, phone_number=phone_number, **extra_fields)
 
 class User(AbstractUser):
     username = None
     HRMS_ID = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True, blank=True, null=True, default=None)
-    phone_number = models.CharField(max_length=10, blank=True, null=True, unique=True, default=None)
+    phone_number = models.CharField(
+        max_length=10, blank=True, null=True, unique=True, default=None,
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     user_status = models.CharField(max_length=10, choices=[('pending', 'Pending'), ('accepted', 'Accepted'), ('rejected', 'Rejected')], default='pending')
     USERNAME_FIELD = 'HRMS_ID'
-    REQUIRED_FIELDS = ['email']
+    REQUIRED_FIELDS = []
     objects = UserManager()
+
+    def __str__(self):
+        return self.HRMS_ID
 
 class Category(models.Model):
     name = models.CharField(max_length=255, unique=True)
@@ -69,5 +77,26 @@ class Post(models.Model):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='posts', null=False, blank=False)
     def __str__(self):
         return f"{self.post_type} by {self.user.HRMS_ID} at {self.created_at}"
-    
 
+class AuditLog(models.Model):
+    ACTION_CHOICES = [
+        ('user_login', 'User Login'),
+        ('user_status_change', 'User Status Change'),
+        ('document_create', 'Document Create'),
+        ('document_view', 'Document View'),
+        ('post_create', 'Post Create'),
+        ('batch_action', 'Batch Action'),
+    ]
+    TARGET_CHOICES = [
+        ('document', 'Document'),
+        ('user', 'User'),
+    ]
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs')
+    action = models.CharField(max_length=50, choices=ACTION_CHOICES)
+    target_type = models.CharField(max_length=20, choices=TARGET_CHOICES)
+    target_id = models.CharField(max_length=255, blank=True, default='')
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{self.action} by {self.user} on {self.target_type}:{self.target_id}"
