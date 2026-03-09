@@ -322,7 +322,7 @@ def _watermark_pdf(pdf_path, watermark_text):
 
 
 def _serve_pdf(document, hrms_id, as_download=False):
-    """Stream the PDF file for a Document, with watermark."""
+    """Stream the PDF file for a Document, with watermark only on download."""
     import os
     pdf_path = os.path.join(settings.MEDIA_ROOT, 'documents', f'{document.document_id}.pdf')
     if not os.path.isfile(pdf_path):
@@ -331,12 +331,13 @@ def _serve_pdf(document, hrms_id, as_download=False):
     if as_download:
         now_str = timezone.now().strftime('%d-%m-%Y %H:%M:%S')
         watermark_text = f"Downloaded by {hrms_id} at {now_str}"
+        file_to_serve = _watermark_pdf(pdf_path, watermark_text)
+        disposition = 'attachment'
     else:
-        watermark_text = f"RDSO - {hrms_id}"
+        file_to_serve = open(pdf_path, 'rb')
+        disposition = 'inline'
 
-    watermarked = _watermark_pdf(pdf_path, watermark_text)
-    disposition = 'attachment' if as_download else 'inline'
-    response = FileResponse(watermarked, content_type='application/pdf')
+    response = FileResponse(file_to_serve, content_type='application/pdf')
     response['Content-Disposition'] = f'{disposition}; filename="{document.document_id}.pdf"'
     return response
 
