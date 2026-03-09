@@ -11,7 +11,10 @@ from .serializers import PostSerializer, UserSerializer, DocumentSerializer, Cat
 from .auth_serializers import HRMSTokenSerializer
 from .permissions import IsAcceptedUser
 
+import io
 import logging
+from django.conf import settings
+from django.http import FileResponse
 from django.utils import timezone
 from .models import Document, User, Post, Category, AuditLog
 from django.shortcuts import get_object_or_404
@@ -201,11 +204,9 @@ class DocumentListView(APIView):
                 )
                 for doc in documents
             ])
-            # TODO: stream watermarked PDF with "Downloaded by {HRMS_ID}" once file storage is set up
-            return Response({
-                "detail": "PDF download not yet available",
-                "watermark": f"Downloaded by {request.user.HRMS_ID}",
-            }, status=status.HTTP_501_NOT_IMPLEMENTED)
+            if documents.count() == 1:
+                return _serve_pdf(documents.first(), request.user.HRMS_ID, as_download=True)
+            return Response({"detail": "Download supports single document only"}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = DocumentSerializer(documents, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -286,3 +287,67 @@ class UserLogView(APIView):
         logs = AuditLog.objects.filter(target_type='user').order_by('-created_at')
         serializer = AuditLogSerializer(logs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# ---------------- PDF HELPERS ----------------
+
+def _watermark_pdf(pdf_path, watermark_text):
+    """Return BytesIO of the PDF at pdf_path with a diagonal watermark on every page."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    from pypdf import PdfReader, PdfWriter
+
+    # Build a one-page watermark overlay
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=letter)
+    c.setFont("Helvetica", 36)
+    c.setFillAlpha(0.15)
+    c.translate(letter[0] / 2, letter[1] / 2)
+    c.rotate(45)
+    c.drawCentredString(0, 0, watermark_text)
+    c.save()
+    buf.seek(0)
+    watermark_page = PdfReader(buf).pages[0]
+
+    reader = PdfReader(str(pdf_path))
+    writer = PdfWriter()
+    for page in reader.pages:
+        page.merge_page(watermark_page)
+        writer.add_page(page)
+
+    out = io.BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out
+
+
+def _serve_pdf(document, hrms_id, as_download=False):
+    """Stream the PDF file for a Document, with watermark."""
+    import os
+    pdf_path = os.path.join(settings.MEDIA_ROOT, 'documents', f'{document.document_id}.pdf')
+    if not os.path.isfile(pdf_path):
+        return Response({"detail": "PDF file not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if as_download:
+        now_str = timezone.now().strftime('%d-%m-%Y %H:%M:%S')
+        watermark_text = f"Downloaded by {hrms_id} at {now_str}"
+    else:
+        watermark_text = f"RDSO - {hrms_id}"
+
+    watermarked = _watermark_pdf(pdf_path, watermark_text)
+    disposition = 'attachment' if as_download else 'inline'
+    response = FileResponse(watermarked, content_type='application/pdf')
+    response['Content-Disposition'] = f'{disposition}; filename="{document.document_id}.pdf"'
+    return response
+
+
+class DocumentPdfView(APIView):
+    """Serve a single document PDF inline (for viewer) or as download."""
+    permission_classes = [IsAcceptedUser]
+
+    def get(self, request, document_id):
+        document = get_object_or_404(Document, document_id=document_id)
+        as_download = request.query_params.get("download", "false").lower() == "true"
+        log_audit(request.user, 'document_view', 'document', document.document_id,
+                  {"download": as_download})
+        return _serve_pdf(document, request.user.HRMS_ID, as_download=as_download)

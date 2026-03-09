@@ -23,8 +23,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['HRMS_ID', 'email', 'password', 'phone_number', 'user_status']
-        read_only_fields = ['user_status']
+        fields = ['HRMS_ID', 'email', 'password', 'phone_number', 'user_status', 'is_staff']
+        read_only_fields = ['user_status', 'is_staff']
 
     def validate_email(self, value):
         """Treat blank/empty string as None (no email)."""

@@ -4,7 +4,7 @@ from .views import (
     LoginView, RegisterView, HelloView, RegistrationListView,
     UpdateUserStatusView, CreateDocument, CreatePost,
     FeedbackListView, BatchActionView, DumpView,
-    DocumentLogView, UserLogView,
+    DocumentLogView, UserLogView, DocumentPdfView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -18,6 +18,7 @@ urlpatterns = [
     path('create_document/', CreateDocument.as_view(), name='create-document'),
     path('create_post/', CreatePost.as_view(), name='create-post'),
     path('documents/', views.DocumentListView.as_view(), name='document-list'),
+    path('documents/<str:document_id>/pdf/', DocumentPdfView.as_view(), name='document-pdf'),
     path('posts/', views.PostListView.as_view(), name='post-list'),
     path('dump/', DumpView.as_view(), name='dump'),
     path('actions/batch/', BatchActionView.as_view(), name='actions-batch'),
