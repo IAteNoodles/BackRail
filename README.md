@@ -1,29 +1,36 @@
-# BackRail — HRMS Document Management & Feedback API
+# RDSO Document Management System
 
-A Django REST Framework backend for railway HRMS (Human Resource Management System) document management, user registration workflows, and collaborative feedback.
+A full-stack railway HRMS document management system with a Django REST API backend and Flutter cross-platform frontend (Web, Windows, Android).
 
 ## Table of Contents
 
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
+- [Quick Start — Deploy Script](#quick-start--deploy-script)
+- [Manual Setup](#manual-setup)
   - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
+  - [Backend Installation](#backend-installation)
   - [Environment Variables](#environment-variables)
   - [Database Setup](#database-setup)
-  - [Running the Server](#running-the-server)
+  - [Running the Backend](#running-the-backend)
+- [Frontend (Flutter)](#frontend-flutter)
+  - [Running on Web](#running-on-web)
+  - [Building for Windows](#building-for-windows)
+  - [Building for Android](#building-for-android)
 - [API Endpoints](#api-endpoints)
   - [Authentication](#authentication)
   - [User Profile](#user-profile)
   - [Admin — User Management](#admin--user-management)
   - [Documents](#documents)
+  - [PDF Viewing & Download](#pdf-viewing--download)
   - [Posts & Feedback](#posts--feedback)
   - [Batch Actions](#batch-actions)
   - [Data Sync (Dump)](#data-sync-dump)
   - [Audit Logs](#audit-logs)
   - [API Docs (Swagger)](#api-docs-swagger)
 - [Authentication Flow](#authentication-flow)
+- [Deployment](#deployment)
 - [Running Tests](#running-tests)
 - [License](#license)
 
@@ -35,10 +42,13 @@ A Django REST Framework backend for railway HRMS (Human Resource Management Syst
 - **JWT Authentication** — Access tokens (5 min) + refresh tokens (30 days) via `simplejwt`. Only `accepted` users can obtain tokens.
 - **Role-Based Access Control** — Endpoints are gated by `IsAcceptedUser` (regular users) or `IsAdminUser` (staff/superusers).
 - **Document Management** — Admins create documents with categories; accepted users can list and view them.
+- **PDF Viewing & Watermarked Download** — In-app PDF viewer with watermarked downloads stamped with user's HRMS ID and timestamp.
 - **Posts & Feedback** — Users can post comments or feedback against documents, with nested reply support.
 - **Batch Action Queue** — Offline-first clients can sync multiple actions (comments/feedback) in a single request.
 - **Incremental Data Dump** — `GET /api/dump/` supports a `last_synced` timestamp to fetch only updated documents.
 - **Audit Logging** — Every login, status change, document creation, download, and post is recorded in `AuditLog`.
+- **Admin Dashboard** — Admin screens for user management, audit logs, and document administration.
+- **Cross-Platform Frontend** — Flutter app runs on Web (Chrome), Windows, and Android.
 - **Swagger / OpenAPI** — Auto-generated docs via `drf-spectacular`.
 
 ---
@@ -47,12 +57,15 @@ A Django REST Framework backend for railway HRMS (Human Resource Management Syst
 
 | Layer | Technology |
 |---|---|
-| Framework | Django 5.2 / Django REST Framework 3.16 |
+| Backend | Django 5.2 / Django REST Framework 3.16 |
 | Auth | `djangorestframework-simplejwt` (JWT) |
 | CORS | `django-cors-headers` |
 | API Docs | `drf-spectacular` (OpenAPI 3 / Swagger UI) |
 | Database | SQLite (development) |
-| PDF Tools | `reportlab`, `pypdf`, `pillow` (for future watermarking) |
+| PDF Tools | `reportlab` (generation), `pypdf` (watermarking), `pillow` |
+| Production Server | `waitress` (Windows) / `gunicorn` (Linux/macOS) |
+| Frontend | Flutter (Dart) — Web, Windows, Android |
+| UI Kit | `ux4g` design system |
 | Logging | `colorlog` (coloured console output) |
 
 ---
@@ -60,45 +73,114 @@ A Django REST Framework backend for railway HRMS (Human Resource Management Syst
 ## Project Structure
 
 ```
-RailWay/
-├── backend/
-│   └── app/                        # Django project root (manage.py lives here)
-│       ├── app/                    # Project settings package
-│       │   ├── settings.py
-│       │   ├── urls.py
-│       │   ├── wsgi.py
-│       │   └── asgi.py
-│       └── users/                  # Main application
-│           ├── models.py           # User, Document, Category, Post, AuditLog
-│           ├── serializers.py      # DRF serializers
-│           ├── auth_serializers.py # Custom JWT token serializer
-│           ├── views.py            # All API views
-│           ├── urls.py             # Route definitions
-│           ├── permissions.py      # IsAcceptedUser permission class
-│           ├── admin.py            # Django admin registrations
-│           ├── tests.py            # 91 comprehensive tests
-│           └── migrations/
-├── requirements.txt
-├── ENDPOINTS_TODO.md               # Implementation checklist
-├── _api_test.ipynb                 # Jupyter notebook for manual API testing
-└── .gitignore
+rdso_documents_frontend/
+├── RailWay/
+│   ├── deploy.py                   # One-command deployment script
+│   ├── requirements.txt            # Python dependencies
+│   ├── README.md
+│   ├── backend/
+│   │   └── app/                    # Django project root
+│   │       ├── app/                # Project settings
+│   │       │   ├── settings.py
+│   │       │   ├── urls.py
+│   │       │   ├── wsgi.py
+│   │       │   └── asgi.py
+│   │       ├── users/              # Main application
+│   │       │   ├── models.py       # User, Document, Category, Post, AuditLog
+│   │       │   ├── serializers.py
+│   │       │   ├── views.py
+│   │       │   ├── urls.py
+│   │       │   ├── permissions.py
+│   │       │   └── management/     # Custom commands (populate_mock_data)
+│   │       ├── media/documents/    # Generated PDF files
+│   │       └── db.sqlite3
+│   └── stable-env/                 # Python virtual environment
+├── lib/                            # Flutter frontend source
+│   ├── main.dart
+│   ├── config/
+│   │   └── api_config.dart         # Backend URL configuration
+│   ├── models/                     # Data models (User, Document, Post, etc.)
+│   ├── services/                   # API services (auth, documents, posts, etc.)
+│   ├── screens/                    # UI screens
+│   │   ├── login_screen.dart
+│   │   ├── register_screen.dart
+│   │   ├── home_dashboard.dart
+│   │   ├── category_results_screen.dart
+│   │   ├── pdf_view_screen.dart
+│   │   ├── notifications_screen.dart
+│   │   └── admin/                  # Admin-only screens
+│   ├── widgets/                    # Reusable widgets
+│   └── utils/                      # Platform-specific helpers
+├── pubspec.yaml                    # Flutter dependencies
+├── android/                        # Android build config
+├── windows/                        # Windows build config
+└── web/                            # Web build config
 ```
 
 ---
 
-## Getting Started
+## Quick Start — Deploy Script
+
+The fastest way to get the backend running:
+
+```bash
+cd RailWay
+
+# Full setup + production server
+python deploy.py
+
+# Development mode (DEBUG=True, Django runserver)
+python deploy.py --dev
+
+# Setup only (install deps, migrate, collect static)
+python deploy.py --setup
+
+# Run server only (after setup)
+python deploy.py --run --port 8000
+
+# Populate mock data (test users, documents, PDFs)
+python deploy.py --populate
+
+# Bind to a specific host/port
+python deploy.py --host 0.0.0.0 --port 8000
+```
+
+### Deploy Script Options
+
+| Flag | Description |
+|---|---|
+| `--setup` | Setup only: create venv, install deps, migrate, collect static |
+| `--run` | Run server only (skip setup) |
+| `--populate` | Populate mock data and exit |
+| `--dev` | Development mode (DEBUG=True, Django runserver) |
+| `--host` | Host to bind (default: `0.0.0.0`) |
+| `--port` | Port to bind (default: `8000`) |
+
+### Test Credentials (after `--populate`)
+
+| HRMS ID | Password | Role |
+|---|---|---|
+| `ADMIN01` | `admin123pass` | Superuser / Admin |
+| `EMP1001` | `emp1001pass` | Accepted User |
+| `EMP1002` | `emp1002pass` | Pending User |
+| `EMP1003` | `emp1003pass` | Rejected User |
+
+---
+
+## Manual Setup
 
 ### Prerequisites
 
 - Python 3.10+
 - pip
+- Flutter SDK 3.10+ (for frontend builds)
 
-### Installation
+### Backend Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/IAteNoodles/BackRail.git
-cd BackRail
+git clone https://github.com/IAteNoodles/railways.git
+cd railways/rdso_documents_frontend/RailWay
 
 # Create and activate a virtual environment
 python -m venv stable-env
@@ -152,7 +234,7 @@ print(f'Superuser {u.HRMS_ID} is now accepted.')
 "
 ```
 
-### Running the Server
+### Running the Backend
 
 ```bash
 cd backend/app
@@ -160,6 +242,50 @@ python manage.py runserver
 ```
 
 The API will be available at `http://localhost:8000/api/`.
+
+---
+
+## Frontend (Flutter)
+
+The frontend is a Flutter app in the workspace root (`rdso_documents_frontend/`).
+
+### API Configuration
+
+Edit `lib/config/api_config.dart` to set the backend URL:
+
+```dart
+class ApiConfig {
+  static String get baseUrl {
+    if (kIsWeb) return 'http://<YOUR_SERVER_IP>:8000/api';
+    if (Platform.isAndroid) return 'http://<YOUR_SERVER_IP>:8000/api';
+    return 'http://<YOUR_SERVER_IP>:8000/api';
+  }
+}
+```
+
+### Running on Web
+
+```bash
+cd rdso_documents_frontend
+flutter pub get
+flutter run -d chrome --web-port=9090 --web-hostname=0.0.0.0
+```
+
+### Building for Windows
+
+```bash
+flutter build windows --release
+```
+
+Output: `build\windows\x64\runner\Release\`
+
+### Building for Android
+
+```bash
+flutter build apk --release
+```
+
+Output: `build\app\outputs\flutter-apk\app-release.apk`
 
 ---
 
@@ -230,7 +356,6 @@ All endpoints are prefixed with `/api/`.
 |---|---|---|---|
 | `POST` | `/api/create_document/` | Admin | Create a new document with optional categories |
 | `GET` | `/api/documents/` | Accepted User | List documents (optional `?document_ids=DOC-1,DOC-2`) |
-| `GET` | `/api/documents/?download=true` | Accepted User | Request document download (returns 501 — not yet implemented) |
 
 **Create Document — Request Body:**
 ```json
@@ -244,6 +369,15 @@ All endpoints are prefixed with `/api/`.
 }
 ```
 > Categories are created automatically if they don't already exist.
+
+### PDF Viewing & Download
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/documents/<document_id>/pdf/` | Accepted User | View PDF inline |
+| `GET` | `/api/documents/<document_id>/pdf/?download=true` | Accepted User | Download watermarked PDF |
+
+The download endpoint stamps each PDF with: `Downloaded by <HRMS_ID> at <timestamp>`.
 
 ### Posts & Feedback
 
@@ -346,6 +480,29 @@ All endpoints are prefixed with `/api/`.
 3. Only `accepted` users can log in and receive JWT tokens.
 4. Access token (5 min) is sent in the `Authorization: Bearer` header.
 5. Refresh token (30 days) is used at `/api/refresh/` to get a new access token.
+
+---
+
+## Deployment
+
+### Production Backend
+
+```bash
+cd RailWay
+python deploy.py --host 0.0.0.0 --port 8000
+```
+
+This uses **waitress** (Windows) or **gunicorn** (Linux/macOS) as a production WSGI server.
+
+### Network Access
+
+To access from other devices on your LAN:
+
+1. Find your IP: `ipconfig` (Windows) or `ip addr` (Linux)
+2. Update `lib/config/api_config.dart` with your IP
+3. Start backend: `python deploy.py --host 0.0.0.0 --port 8000`
+4. Start frontend: `flutter run -d chrome --web-port=9090 --web-hostname=0.0.0.0`
+5. Access from other devices at `http://<YOUR_IP>:9090`
 
 ---
 
