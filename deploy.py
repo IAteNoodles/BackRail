@@ -50,6 +50,50 @@ def run(cmd: list[str], cwd: Path | None = None, check: bool = True):
     return result
 
 
+def check_git_pull():
+    """Check if git pull is available and prompt the user."""
+    try:
+        log("Checking for updates from remote repository...")
+        subprocess.run(["git", "fetch"], check=True, capture_output=True)
+        status_result = subprocess.run(["git", "status", "-uno"], capture_output=True, text=True)
+        if "Your branch is behind" in status_result.stdout:
+            log("A newer version is available on the remote repository.", "WARN")
+            ans = input("\033[93mDo you want to run 'git pull' now? [Y/n]: \033[0m").strip().lower()
+            if ans in ('', 'y', 'yes'):
+                log("Pulling latest changes...")
+                run(["git", "pull"])
+                log("Pull complete.", "OK")
+            else:
+                log("Skipping git pull.")
+        else:
+            log("Repository is up to date.", "OK")
+    except Exception as e:
+        log(f"Failed to check git status: {e}", "WARN")
+
+
+def kill_port(port: int):
+    """Find and kill any process listening on the specified port."""
+    log(f"Checking if port {port} is in use...")
+    try:
+        if IS_WINDOWS:
+            result = subprocess.run(f"netstat -ano | findstr :{port}", shell=True, capture_output=True, text=True)
+            if result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    parts = line.strip().split()
+                    if len(parts) >= 5 and parts[3] == "LISTENING":
+                        pid = parts[4]
+                        log(f"Port {port} is used by PID {pid}. Killing it...", "WARN")
+                        subprocess.run(f"taskkill /PID {pid} /F", shell=True, capture_output=True)
+        else:
+            result = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
+            if result.stdout:
+                for pid in result.stdout.strip().split():
+                    log(f"Port {port} is used by PID {pid}. Killing it...", "WARN")
+                    subprocess.run(["kill", "-9", pid], capture_output=True)
+    except Exception as e:
+        log(f"Error while trying to free port {port}: {e}", "WARN")
+
+
 def create_venv():
     """Create virtual environment if it doesn't exist."""
     if VENV_DIR.exists() and PYTHON_BIN.exists():
@@ -182,6 +226,9 @@ def main():
     args = parser.parse_args()
 
     os.chdir(SCRIPT_DIR)
+    
+    # Optional update check before starting
+    check_git_pull()
 
     if args.populate:
         populate()
@@ -192,11 +239,13 @@ def main():
         return
 
     if args.run:
+        kill_port(args.port)
         run_server(host=args.host, port=args.port, dev=args.dev)
         return
 
     # Default: full setup + run
     setup(dev=args.dev)
+    kill_port(args.port)
     run_server(host=args.host, port=args.port, dev=args.dev)
 
 
