@@ -12,6 +12,7 @@ from .auth_serializers import HRMSTokenSerializer
 from .permissions import IsAcceptedUser
 
 import io
+import os
 import logging
 from django.conf import settings
 from django.http import FileResponse
@@ -19,6 +20,9 @@ from django.utils import timezone
 from .models import Document, User, Post, Category, AuditLog
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas as rl_canvas
+from pypdf import PdfReader, PdfWriter
 
 logger = logging.getLogger("users")
 
@@ -187,27 +191,30 @@ class DocumentListView(APIView):
 
     def get(self, request):
         document_ids = request.query_params.get("document_ids")
-        download = request.query_params.get("download", "false").lower() == "true"
+        download_param = request.query_params.get("download")  # None, "true", or "false"
 
         if document_ids:
-            documents = Document.objects.filter(document_id__in=document_ids.split(','))
+            ids_list = [i.strip() for i in document_ids.split(',') if i.strip()]
+            documents = Document.objects.filter(document_id__in=ids_list)
         else:
             documents = Document.objects.all()
 
-        if download:
-            # Audit log only for download operations
-            AuditLog.objects.bulk_create([
-                AuditLog(
-                    user=request.user, action='document_view',
-                    target_type='document', target_id=doc.document_id,
-                    metadata={"download": True},
-                )
-                for doc in documents
-            ])
-            if documents.count() == 1:
-                return _serve_pdf(documents.first(), request.user.HRMS_ID, as_download=True)
-            return Response({"detail": "Download supports single document only"}, status=status.HTTP_400_BAD_REQUEST)
+        # PDF mode: download param is present (either "true" or "false")
+        if download_param is not None:
+            as_download = download_param.lower() == "true"
 
+            if not document_ids or documents.count() != 1:
+                return Response(
+                    {"detail": "Specify exactly one document_ids value for PDF view/download."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            document = documents.first()
+            log_audit(request.user, 'document_view', 'document', document.document_id,
+                      {"download": as_download})
+            return _serve_pdf(document, request.user.HRMS_ID, as_download=as_download)
+
+        # JSON listing mode (no download param)
         serializer = DocumentSerializer(documents, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -293,10 +300,6 @@ class UserLogView(APIView):
 
 def _watermark_pdf(pdf_path, watermark_text):
     """Return BytesIO of the PDF at pdf_path with a diagonal watermark on every page."""
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas as rl_canvas
-    from pypdf import PdfReader, PdfWriter
-
     # Build a one-page watermark overlay
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=letter)
@@ -323,32 +326,52 @@ def _watermark_pdf(pdf_path, watermark_text):
 
 def _serve_pdf(document, hrms_id, as_download=False):
     """Stream the PDF file for a Document, with watermark only on download."""
-    import os
     pdf_path = os.path.join(settings.MEDIA_ROOT, 'documents', f'{document.document_id}.pdf')
+    logger.info(f"_serve_pdf called: doc={document.document_id}, download={as_download}, path={pdf_path}")
+
+    # Path traversal protection
+    resolved = os.path.realpath(pdf_path)
+    if not resolved.startswith(os.path.realpath(str(settings.MEDIA_ROOT))):
+        logger.warning(f"_serve_pdf: path traversal blocked for {document.document_id}")
+        return Response({"detail": "Invalid document path"}, status=status.HTTP_403_FORBIDDEN)
+
     if not os.path.isfile(pdf_path):
+        logger.warning(f"_serve_pdf: file not found at {pdf_path}")
         return Response({"detail": "PDF file not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    if as_download:
-        now_str = timezone.now().strftime('%d-%m-%Y %H:%M:%S')
-        watermark_text = f"Downloaded by {hrms_id} at {now_str}"
-        file_to_serve = _watermark_pdf(pdf_path, watermark_text)
-        disposition = 'attachment'
-    else:
-        file_to_serve = open(pdf_path, 'rb')
-        disposition = 'inline'
+    file_size = os.path.getsize(pdf_path)
+    logger.info(f"_serve_pdf: file exists, size={file_size} bytes")
+
+    try:
+        if as_download:
+            now_str = timezone.now().strftime('%d-%m-%Y %H:%M:%S')
+            watermark_text = f"Downloaded by {hrms_id} at {now_str}"
+            file_to_serve = _watermark_pdf(pdf_path, watermark_text)
+            disposition = 'attachment'
+        else:
+            # Normalize through pypdf for cross-viewer compatibility
+            reader = PdfReader(str(pdf_path))
+            writer = PdfWriter()
+            for page in reader.pages:
+                writer.add_page(page)
+            out = io.BytesIO()
+            writer.write(out)
+            logger.info(f"_serve_pdf: normalized PDF size={out.tell()} bytes")
+            out.seek(0)
+            file_to_serve = out
+            disposition = 'inline'
+    except Exception as e:
+        logger.error(f"_serve_pdf: PDF processing error for {document.document_id}: {e}")
+        return Response({"detail": f"PDF processing error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     response = FileResponse(file_to_serve, content_type='application/pdf')
     response['Content-Disposition'] = f'{disposition}; filename="{document.document_id}.pdf"'
     return response
 
 
-class DocumentPdfView(APIView):
-    """Serve a single document PDF inline (for viewer) or as download."""
-    permission_classes = [IsAcceptedUser]
+class HealthCheckView(APIView):
+    """Simple health check for deployment monitoring."""
+    permission_classes = [AllowAny]
 
-    def get(self, request, document_id):
-        document = get_object_or_404(Document, document_id=document_id)
-        as_download = request.query_params.get("download", "false").lower() == "true"
-        log_audit(request.user, 'document_view', 'document', document.document_id,
-                  {"download": as_download})
-        return _serve_pdf(document, request.user.HRMS_ID, as_download=as_download)
+    def get(self, request):
+        return Response({"status": "ok", "timestamp": timezone.now().isoformat()}, status=status.HTTP_200_OK)
