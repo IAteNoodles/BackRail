@@ -48,6 +48,9 @@ class User(AbstractUser):
     def __str__(self):
         return self.HRMS_ID
 
+    class Meta(AbstractUser.Meta):
+        ordering = ['HRMS_ID']
+
 class Category(models.Model):
     name = models.CharField(max_length=255, unique=True)
     def __str__(self):
@@ -95,6 +98,9 @@ class Document(models.Model):
     def __str__(self):
         return f"{self.name} (v{self.version})"
 
+    class Meta:
+        ordering = ['document_id']
+
 class Post(models.Model):
     POST_TYPES = [
         ('comment', 'Comment'),
@@ -108,6 +114,9 @@ class Post(models.Model):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='posts', null=False, blank=False)
     def __str__(self):
         return f"{self.post_type} by {self.user.HRMS_ID} at {self.created_at}"
+
+    class Meta:
+        ordering = ['-created_at']
 
 class AuditLog(models.Model):
     ACTION_CHOICES = [
@@ -131,3 +140,6 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} by {self.user} on {self.target_type}:{self.target_id}"
+
+    class Meta:
+        ordering = ['-created_at']

@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.pagination import PageNumberPagination
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.exceptions import InvalidToken
@@ -10,8 +11,8 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 from .serializers import PostSerializer, UserSerializer, DocumentSerializer, CategorySerializer, CategoryDetailSerializer, SubheadSerializer, AuditLogSerializer
 from .auth_serializers import HRMSTokenSerializer
 from .permissions import IsAcceptedUser
+from .utils import log_audit, serve_file
 
-import io
 import json
 import os
 import sys
@@ -20,25 +21,18 @@ import subprocess
 import threading
 from pathlib import Path
 from django.conf import settings
-from django.http import FileResponse
 from django.utils import timezone
 from django.db.models import Count
 from .models import Document, User, Post, Category, Subhead, AuditLog
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas as rl_canvas
-from pypdf import PdfReader, PdfWriter
 
 logger = logging.getLogger("users")
 
 
-def log_audit(user, action, target_type, target_id='', metadata=None):
-    AuditLog.objects.create(
-        user=user, action=action,
-        target_type=target_type, target_id=str(target_id),
-        metadata=metadata or {},
-    )
+class StandardPagination(PageNumberPagination):
+    page_size_query_param = 'page_size'
+    max_page_size = 200
 
 # ---------------- REGISTER ----------------
 class RegisterView(APIView):
@@ -111,8 +105,10 @@ class RegistrationListView(APIView):
         if status_filter in ['pending', 'accepted', 'rejected']:
             users = users.filter(user_status=status_filter)
 
-        serializer = UserSerializer(users, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(users, request)
+        serializer = UserSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 class UpdateUserStatusView(APIView):
     permission_classes = [IsAuthenticated, IsAdminUser]
@@ -174,8 +170,10 @@ class PostListView(APIView):
             return Response({"error": "document_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         posts = Post.objects.filter(document__document_id=document_id)
-        serializer = PostSerializer(posts, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(posts, request)
+        serializer = PostSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 # ---------------- DOCUMENTS ----------------
 
@@ -218,11 +216,13 @@ class DocumentListView(APIView):
             document = documents.first()
             log_audit(request.user, 'document_view', 'document', document.document_id,
                       {"download": as_download})
-            return _serve_file(document, request.user.HRMS_ID, as_download=as_download)
+            return serve_file(document, request.user.HRMS_ID, as_download=as_download)
 
         # JSON listing mode (no download param)
-        serializer = DocumentSerializer(documents, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(documents, request)
+        serializer = DocumentSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 # ---------------- FEEDBACK ----------------
 
@@ -232,12 +232,15 @@ class FeedbackListView(APIView):
     def get(self, request, document_id):
         get_object_or_404(Document, document_id=document_id)
         posts = Post.objects.filter(document__document_id=document_id, post_type='feedback')
-        serializer = PostSerializer(posts, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(posts, request)
+        serializer = PostSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
-# ---------------- BATCH ACTIONS ----------------
+# ---------------- BATCH ACTIONS (DEPRECATED) ----------------
 
 class BatchActionView(APIView):
+    """Deprecated: Batch action processing. Retained for backward compatibility."""
     permission_classes = [IsAcceptedUser]
 
     def post(self, request):
@@ -292,97 +295,20 @@ class DocumentLogView(APIView):
 
     def get(self, request):
         logs = AuditLog.objects.filter(target_type='document').order_by('-created_at')
-        serializer = AuditLogSerializer(logs, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(logs, request)
+        serializer = AuditLogSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 class UserLogView(APIView):
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
         logs = AuditLog.objects.filter(target_type='user').order_by('-created_at')
-        serializer = AuditLogSerializer(logs, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-# ---------------- FILE SERVING ----------------
-
-def _watermark_pdf(pdf_path, watermark_text):
-    """Return BytesIO of the PDF at pdf_path with a diagonal watermark on every page."""
-    # Build a one-page watermark overlay
-    buf = io.BytesIO()
-    c = rl_canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Helvetica", 36)
-    c.setFillAlpha(0.15)
-    c.translate(letter[0] / 2, letter[1] / 2)
-    c.rotate(45)
-    c.drawCentredString(0, 0, watermark_text)
-    c.save()
-    buf.seek(0)
-    watermark_page = PdfReader(buf).pages[0]
-
-    reader = PdfReader(str(pdf_path))
-    writer = PdfWriter()
-    for page in reader.pages:
-        page.merge_page(watermark_page)
-        writer.add_page(page)
-
-    out = io.BytesIO()
-    writer.write(out)
-    out.seek(0)
-    return out
-
-
-def _serve_file(document, hrms_id, as_download=False):
-    """Stream the file for a Document. Supports RDSO storage or legacy media path."""
-    # Determine file path
-    if document.storage_path and document.file_name_on_disk:
-        file_path = os.path.join(
-            str(settings.RDSO_STORAGE_ROOT),
-            document.storage_path,
-            document.file_name_on_disk,
-        )
-        allowed_root = os.path.realpath(str(settings.RDSO_STORAGE_ROOT))
-    else:
-        file_path = os.path.join(settings.MEDIA_ROOT, 'documents', f'{document.document_id}.pdf')
-        allowed_root = os.path.realpath(str(settings.MEDIA_ROOT))
-
-    logger.info("_serve_file: doc=%s, download=%s, path=%s", document.document_id, as_download, file_path)
-
-    # Path traversal protection
-    resolved = os.path.realpath(file_path)
-    if not resolved.startswith(allowed_root):
-        logger.warning("_serve_file: path traversal blocked for %s", document.document_id)
-        return Response({"detail": "Invalid document path"}, status=status.HTTP_403_FORBIDDEN)
-
-    if not os.path.isfile(file_path):
-        logger.warning("_serve_file: file not found at %s", file_path)
-        return Response({"detail": "File not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    file_size = os.path.getsize(file_path)
-    ct = document.content_type or 'application/pdf'
-    is_pdf = ct == 'application/pdf'
-    safe_name = document.file_name_on_disk or f'{document.document_id}.pdf'
-    logger.info("_serve_file: file exists, size=%d, content_type=%s", file_size, ct)
-
-    try:
-        if as_download and is_pdf:
-            now_str = timezone.now().strftime('%d-%m-%Y %H:%M:%S')
-            watermark_text = f"Downloaded by {hrms_id} at {now_str}"
-            file_to_serve = _watermark_pdf(file_path, watermark_text)
-            disposition = 'attachment'
-        elif as_download:
-            file_to_serve = open(file_path, 'rb')
-            disposition = 'attachment'
-        else:
-            file_to_serve = open(file_path, 'rb')
-            disposition = 'inline'
-    except Exception as e:
-        logger.error("_serve_file: processing error for %s: %s", document.document_id, e)
-        return Response({"detail": f"File processing error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    response = FileResponse(file_to_serve, content_type=ct)
-    response['Content-Disposition'] = f'{disposition}; filename="{safe_name}"'
-    return response
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(logs, request)
+        serializer = AuditLogSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class HealthCheckView(APIView):
@@ -404,8 +330,10 @@ class CategoryListView(APIView):
             subhead_count=Count('subheads', distinct=True),
             drawing_count=Count('documents', distinct=True),
         ).order_by('name')
-        serializer = CategoryDetailSerializer(categories, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(categories, request)
+        serializer = CategoryDetailSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class SubheadListView(APIView):
@@ -415,8 +343,10 @@ class SubheadListView(APIView):
         logger.info("SubheadListView: listing subheads for category %s", pk)
         category = get_object_or_404(Category, pk=pk)
         subheads = Subhead.objects.filter(category=category).order_by('name')
-        serializer = SubheadSerializer(subheads, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(subheads, request)
+        serializer = SubheadSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class SubheadDocumentListView(APIView):
@@ -426,8 +356,10 @@ class SubheadDocumentListView(APIView):
         logger.info("SubheadDocumentListView: listing documents for subhead %s", pk)
         subhead = get_object_or_404(Subhead, pk=pk)
         documents = Document.objects.filter(subhead=subhead).prefetch_related('category').order_by('name')
-        serializer = DocumentSerializer(documents, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(documents, request)
+        serializer = DocumentSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 # ---------------- ADMIN CRAWLER ----------------
@@ -438,14 +370,14 @@ _crawler_log_lines = []
 
 
 def _read_stream(stream):
-    """Read lines from a single stream and buffer them."""
-    global _crawler_log_lines
+    """Read lines from a single stream and buffer them (thread-safe)."""
     if stream is None:
         return
     for raw_line in stream:
         line = raw_line.decode('utf-8', errors='replace').rstrip()
         if line:
-            _crawler_log_lines.append(line)
+            with _crawler_lock:
+                _crawler_log_lines.append(line)
             logger.info("crawler: %s", line)
 
 
@@ -488,7 +420,8 @@ class CrawlerStatusView(APIView):
 
     def get(self, request):
         global _crawler_process
-        running = _crawler_process is not None and _crawler_process.poll() is None
+        with _crawler_lock:
+            running = _crawler_process is not None and _crawler_process.poll() is None
 
         meta_path = Path(settings.RDSO_STORAGE_ROOT) / '__meta__.json'
         meta_info = {}
@@ -515,8 +448,9 @@ class CrawlerLogsView(APIView):
     def get(self, request):
         """Return crawler log lines. ?since=N returns lines after index N."""
         since = int(request.query_params.get('since', 0))
-        lines = _crawler_log_lines[since:]
-        running = _crawler_process is not None and _crawler_process.poll() is None
+        with _crawler_lock:
+            lines = _crawler_log_lines[since:]
+            running = _crawler_process is not None and _crawler_process.poll() is None
         return Response({
             "running": running,
             "offset": since + len(lines),

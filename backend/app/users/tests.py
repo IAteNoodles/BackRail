@@ -330,27 +330,26 @@ class RegistrationListTests(APITestMixin, TestCase):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertIsInstance(resp.data, list)
         # admin + 3 users = 4
-        self.assertEqual(len(resp.data), 4)
+        self.assertEqual(resp.data["count"], 4)
 
     def test_filter_pending(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"), {"filter": "pending"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        for u in resp.data:
+        for u in resp.data["results"]:
             self.assertEqual(u["user_status"], "pending")
 
     def test_filter_accepted(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"), {"filter": "accepted"})
-        for u in resp.data:
+        for u in resp.data["results"]:
             self.assertEqual(u["user_status"], "accepted")
 
     def test_filter_rejected(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"), {"filter": "rejected"})
-        for u in resp.data:
+        for u in resp.data["results"]:
             self.assertEqual(u["user_status"], "rejected")
 
     def test_list_as_regular_user_forbidden(self):
@@ -526,19 +525,20 @@ class DocumentListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("document-list"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 2)
+        self.assertEqual(resp.data["count"], 2)
+        self.assertEqual(len(resp.data["results"]), 2)
 
     def test_list_filtered(self):
         c = self._user_client()
         resp = c.get(reverse("document-list"), {"document_ids": "DOC-A"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
-        self.assertEqual(resp.data[0]["document_id"], "DOC-A")
+        self.assertEqual(resp.data["count"], 1)
+        self.assertEqual(resp.data["results"][0]["document_id"], "DOC-A")
 
-    def test_download_returns_501(self):
+    def test_download_returns_400_without_document_id(self):
         c = self._user_client()
         resp = c.get(reverse("document-list"), {"download": "true"})
-        self.assertEqual(resp.status_code, http_status.HTTP_501_NOT_IMPLEMENTED)
+        self.assertEqual(resp.status_code, http_status.HTTP_400_BAD_REQUEST)
 
     def test_creates_audit_logs_bulk(self):
         """Audit logs are only created for download operations, not plain list."""
@@ -548,10 +548,10 @@ class DocumentListTests(APITestMixin, TestCase):
         c.get(reverse("document-list"))
         logs = AuditLog.objects.filter(action="document_view")
         self.assertEqual(logs.count(), 0)
-        # Download request SHOULD create audit logs
-        c.get(reverse("document-list"), {"download": "true"})
+        # Download request with specific document SHOULD create audit log
+        c.get(reverse("document-list"), {"download": "true", "document_ids": "DOC-A"})
         logs = AuditLog.objects.filter(action="document_view")
-        self.assertEqual(logs.count(), 2)  # one per document
+        self.assertEqual(logs.count(), 1)
 
     def test_unauthenticated(self):
         resp = self._anon_client().get(reverse("document-list"))
@@ -699,7 +699,7 @@ class PostListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("post-list"), {"document_id": "DOC-PL"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 2)
+        self.assertEqual(resp.data["count"], 2)
 
     def test_missing_document_param(self):
         c = self._user_client()
@@ -711,7 +711,7 @@ class PostListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("post-list"), {"document_id": "DOC-OTHER"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 0)
+        self.assertEqual(resp.data["count"], 0)
 
 
 # ===================================================================
@@ -735,8 +735,8 @@ class FeedbackListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("feedback-list", kwargs={"document_id": "DOC-FB"}))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
-        self.assertEqual(resp.data[0]["post_type"], "feedback")
+        self.assertEqual(resp.data["count"], 1)
+        self.assertEqual(resp.data["results"][0]["post_type"], "feedback")
 
     def test_nonexistent_document(self):
         c = self._user_client()
@@ -837,7 +837,7 @@ class AuditLogViewTests(APITestMixin, TestCase):
         c = self._admin_client()
         resp = c.get(reverse("document-logs"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        for log in resp.data:
+        for log in resp.data["results"]:
             self.assertEqual(log["target_type"], "document")
 
     def test_document_logs_as_regular_user_forbidden(self):
@@ -849,7 +849,7 @@ class AuditLogViewTests(APITestMixin, TestCase):
         c = self._admin_client()
         resp = c.get(reverse("user-logs"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        for log in resp.data:
+        for log in resp.data["results"]:
             self.assertEqual(log["target_type"], "user")
 
     def test_user_logs_unauthenticated(self):
@@ -859,9 +859,10 @@ class AuditLogViewTests(APITestMixin, TestCase):
     def test_document_logs_ordered_newest_first(self):
         c = self._admin_client()
         resp = c.get(reverse("document-logs"))
-        if len(resp.data) >= 2:
+        results = resp.data["results"]
+        if len(results) >= 2:
             self.assertGreaterEqual(
-                resp.data[0]["created_at"], resp.data[1]["created_at"]
+                results[0]["created_at"], results[1]["created_at"]
             )
 
 
@@ -965,7 +966,7 @@ class SecurityTests(APITestMixin, TestCase):
     def test_user_list_password_not_exposed(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"))
-        for u in resp.data:
+        for u in resp.data["results"]:
             self.assertNotIn("password", u)
 
     # -- registration creates pending user ----------------------------------
