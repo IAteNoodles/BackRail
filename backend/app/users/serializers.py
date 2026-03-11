@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from django.core.validators import RegexValidator
-from .models import User, Post, Document, Category, AuditLog
+from .models import User, Post, Document, Category, Subhead, AuditLog
 
 _phone_regex = RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')
 
@@ -51,7 +51,25 @@ class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = '__all__'
-    
+
+
+class CategoryDetailSerializer(serializers.ModelSerializer):
+    subhead_count = serializers.IntegerField(read_only=True)
+    drawing_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Category
+        fields = ['id', 'name', 'subhead_count', 'drawing_count']
+
+
+class SubheadSerializer(serializers.ModelSerializer):
+    category_name = serializers.ReadOnlyField(source='category.name')
+
+    class Meta:
+        model = Subhead
+        fields = ['id', 'name', 'category', 'category_name', 'crawler_id', 'drawing_count']
+
+
 class DocumentSerializer(serializers.ModelSerializer):
     
     # Get the names from the request, which might contain new categories that need to be created, or existing categories that need to be linked
@@ -71,7 +89,13 @@ class DocumentSerializer(serializers.ModelSerializer):
             'internal_link',
             'category',
             'category_names',
-            'last_updated'
+            'last_updated',
+            'drawing_id',
+            'description',
+            'content_type',
+            'file_size',
+            'is_archived',
+            'subhead',
         ]
     
     def create(self, validated_data):

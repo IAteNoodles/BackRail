@@ -53,14 +53,45 @@ class Category(models.Model):
     def __str__(self):
         return self.name
 
+
+class Subhead(models.Model):
+    name = models.CharField(max_length=500)
+    category = models.ForeignKey(Category, related_name='subheads', on_delete=models.CASCADE)
+    crawler_id = models.CharField(max_length=50, blank=True, default='')
+    source_url = models.URLField(blank=True, default='', max_length=1000)
+    drawing_count = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = [('name', 'category')]
+
+    def __str__(self):
+        return f"{self.name} ({self.category.name})"
+
+
 class Document(models.Model):
     document_id = models.CharField(max_length=255, unique=True)
     name = models.CharField(max_length=255)
-    version = models.CharField(max_length=50)
-    link = models.URLField()
-    internal_link = models.URLField()
-    category = models.ManyToManyField('Category', related_name='documents')
+    version = models.CharField(max_length=50, default='Current')
+    link = models.URLField(blank=True, default='', max_length=1000)
+    internal_link = models.URLField(blank=True, default='', max_length=1000)
+    category = models.ManyToManyField('Category', related_name='documents', blank=True)
     last_updated = models.DateTimeField(auto_now=True)
+
+    # RDSO crawler fields
+    drawing_id = models.IntegerField(unique=True, null=True, blank=True)
+    subhead = models.ForeignKey(Subhead, null=True, blank=True, related_name='documents', on_delete=models.SET_NULL)
+    description = models.TextField(blank=True, default='')
+    storage_path = models.CharField(max_length=1000, blank=True, default='')
+    file_name_on_disk = models.CharField(max_length=500, blank=True, default='')
+    content_type = models.CharField(max_length=100, blank=True, default='application/pdf')
+    file_size = models.BigIntegerField(null=True, blank=True)
+    sha256 = models.CharField(max_length=64, blank=True, default='')
+    source_url = models.URLField(blank=True, default='', max_length=1000)
+    source_file_url = models.URLField(blank=True, default='', max_length=1000)
+    is_archived = models.BooleanField(default=False)
+    crawled_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return f"{self.name} (v{self.version})"
 

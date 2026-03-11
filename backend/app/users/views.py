@@ -7,17 +7,23 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.exceptions import InvalidToken
 
-from .serializers import PostSerializer, UserSerializer, DocumentSerializer, CategorySerializer, AuditLogSerializer
+from .serializers import PostSerializer, UserSerializer, DocumentSerializer, CategorySerializer, CategoryDetailSerializer, SubheadSerializer, AuditLogSerializer
 from .auth_serializers import HRMSTokenSerializer
 from .permissions import IsAcceptedUser
 
 import io
+import json
 import os
+import sys
 import logging
+import subprocess
+import threading
+from pathlib import Path
 from django.conf import settings
 from django.http import FileResponse
 from django.utils import timezone
-from .models import Document, User, Post, Category, AuditLog
+from django.db.models import Count
+from .models import Document, User, Post, Category, Subhead, AuditLog
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from reportlab.lib.pagesizes import letter
@@ -195,9 +201,9 @@ class DocumentListView(APIView):
 
         if document_ids:
             ids_list = [i.strip() for i in document_ids.split(',') if i.strip()]
-            documents = Document.objects.filter(document_id__in=ids_list)
+            documents = Document.objects.filter(document_id__in=ids_list).prefetch_related('category')
         else:
-            documents = Document.objects.all()
+            documents = Document.objects.prefetch_related('category').all()
 
         # PDF mode: download param is present (either "true" or "false")
         if download_param is not None:
@@ -212,7 +218,7 @@ class DocumentListView(APIView):
             document = documents.first()
             log_audit(request.user, 'document_view', 'document', document.document_id,
                       {"download": as_download})
-            return _serve_pdf(document, request.user.HRMS_ID, as_download=as_download)
+            return _serve_file(document, request.user.HRMS_ID, as_download=as_download)
 
         # JSON listing mode (no download param)
         serializer = DocumentSerializer(documents, many=True)
@@ -257,7 +263,7 @@ class BatchActionView(APIView):
         logger.info(f"Batch action by {request.user.HRMS_ID}: {len(actions)} items")
         return Response({"results": results}, status=status.HTTP_200_OK)
 
-# ---------------- DUMP (MOCK) ----------------
+# ---------------- DUMP ----------------
 
 class DumpView(APIView):
     permission_classes = [IsAcceptedUser]
@@ -270,10 +276,12 @@ class DumpView(APIView):
             documents = documents.filter(last_updated__gt=last_synced)
 
         categories = Category.objects.all()
+        subheads = Subhead.objects.all()
 
         return Response({
             "documents": DocumentSerializer(documents, many=True).data,
             "categories": CategorySerializer(categories, many=True).data,
+            "subheads": SubheadSerializer(subheads, many=True).data,
             "timestamp": timezone.now().isoformat(),
         }, status=status.HTTP_200_OK)
 
@@ -296,7 +304,7 @@ class UserLogView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-# ---------------- PDF HELPERS ----------------
+# ---------------- FILE SERVING ----------------
 
 def _watermark_pdf(pdf_path, watermark_text):
     """Return BytesIO of the PDF at pdf_path with a diagonal watermark on every page."""
@@ -324,48 +332,56 @@ def _watermark_pdf(pdf_path, watermark_text):
     return out
 
 
-def _serve_pdf(document, hrms_id, as_download=False):
-    """Stream the PDF file for a Document, with watermark only on download."""
-    pdf_path = os.path.join(settings.MEDIA_ROOT, 'documents', f'{document.document_id}.pdf')
-    logger.info(f"_serve_pdf called: doc={document.document_id}, download={as_download}, path={pdf_path}")
+def _serve_file(document, hrms_id, as_download=False):
+    """Stream the file for a Document. Supports RDSO storage or legacy media path."""
+    # Determine file path
+    if document.storage_path and document.file_name_on_disk:
+        file_path = os.path.join(
+            str(settings.RDSO_STORAGE_ROOT),
+            document.storage_path,
+            document.file_name_on_disk,
+        )
+        allowed_root = os.path.realpath(str(settings.RDSO_STORAGE_ROOT))
+    else:
+        file_path = os.path.join(settings.MEDIA_ROOT, 'documents', f'{document.document_id}.pdf')
+        allowed_root = os.path.realpath(str(settings.MEDIA_ROOT))
+
+    logger.info("_serve_file: doc=%s, download=%s, path=%s", document.document_id, as_download, file_path)
 
     # Path traversal protection
-    resolved = os.path.realpath(pdf_path)
-    if not resolved.startswith(os.path.realpath(str(settings.MEDIA_ROOT))):
-        logger.warning(f"_serve_pdf: path traversal blocked for {document.document_id}")
+    resolved = os.path.realpath(file_path)
+    if not resolved.startswith(allowed_root):
+        logger.warning("_serve_file: path traversal blocked for %s", document.document_id)
         return Response({"detail": "Invalid document path"}, status=status.HTTP_403_FORBIDDEN)
 
-    if not os.path.isfile(pdf_path):
-        logger.warning(f"_serve_pdf: file not found at {pdf_path}")
-        return Response({"detail": "PDF file not found"}, status=status.HTTP_404_NOT_FOUND)
+    if not os.path.isfile(file_path):
+        logger.warning("_serve_file: file not found at %s", file_path)
+        return Response({"detail": "File not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    file_size = os.path.getsize(pdf_path)
-    logger.info(f"_serve_pdf: file exists, size={file_size} bytes")
+    file_size = os.path.getsize(file_path)
+    ct = document.content_type or 'application/pdf'
+    is_pdf = ct == 'application/pdf'
+    safe_name = document.file_name_on_disk or f'{document.document_id}.pdf'
+    logger.info("_serve_file: file exists, size=%d, content_type=%s", file_size, ct)
 
     try:
-        if as_download:
+        if as_download and is_pdf:
             now_str = timezone.now().strftime('%d-%m-%Y %H:%M:%S')
             watermark_text = f"Downloaded by {hrms_id} at {now_str}"
-            file_to_serve = _watermark_pdf(pdf_path, watermark_text)
+            file_to_serve = _watermark_pdf(file_path, watermark_text)
+            disposition = 'attachment'
+        elif as_download:
+            file_to_serve = open(file_path, 'rb')
             disposition = 'attachment'
         else:
-            # Normalize through pypdf for cross-viewer compatibility
-            reader = PdfReader(str(pdf_path))
-            writer = PdfWriter()
-            for page in reader.pages:
-                writer.add_page(page)
-            out = io.BytesIO()
-            writer.write(out)
-            logger.info(f"_serve_pdf: normalized PDF size={out.tell()} bytes")
-            out.seek(0)
-            file_to_serve = out
+            file_to_serve = open(file_path, 'rb')
             disposition = 'inline'
     except Exception as e:
-        logger.error(f"_serve_pdf: PDF processing error for {document.document_id}: {e}")
-        return Response({"detail": f"PDF processing error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error("_serve_file: processing error for %s: %s", document.document_id, e)
+        return Response({"detail": f"File processing error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    response = FileResponse(file_to_serve, content_type='application/pdf')
-    response['Content-Disposition'] = f'{disposition}; filename="{document.document_id}.pdf"'
+    response = FileResponse(file_to_serve, content_type=ct)
+    response['Content-Disposition'] = f'{disposition}; filename="{safe_name}"'
     return response
 
 
@@ -375,3 +391,149 @@ class HealthCheckView(APIView):
 
     def get(self, request):
         return Response({"status": "ok", "timestamp": timezone.now().isoformat()}, status=status.HTTP_200_OK)
+
+
+# ---------------- CATALOG HIERARCHY ----------------
+
+class CategoryListView(APIView):
+    permission_classes = [IsAcceptedUser]
+
+    def get(self, request):
+        logger.info("CategoryListView: listing categories")
+        categories = Category.objects.annotate(
+            subhead_count=Count('subheads', distinct=True),
+            drawing_count=Count('documents', distinct=True),
+        ).order_by('name')
+        serializer = CategoryDetailSerializer(categories, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SubheadListView(APIView):
+    permission_classes = [IsAcceptedUser]
+
+    def get(self, request, pk):
+        logger.info("SubheadListView: listing subheads for category %s", pk)
+        category = get_object_or_404(Category, pk=pk)
+        subheads = Subhead.objects.filter(category=category).order_by('name')
+        serializer = SubheadSerializer(subheads, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SubheadDocumentListView(APIView):
+    permission_classes = [IsAcceptedUser]
+
+    def get(self, request, pk):
+        logger.info("SubheadDocumentListView: listing documents for subhead %s", pk)
+        subhead = get_object_or_404(Subhead, pk=pk)
+        documents = Document.objects.filter(subhead=subhead).prefetch_related('category').order_by('name')
+        serializer = DocumentSerializer(documents, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# ---------------- ADMIN CRAWLER ----------------
+
+_crawler_lock = threading.Lock()
+_crawler_process = None
+_crawler_log_lines = []
+
+
+def _read_stream(stream):
+    """Read lines from a single stream and buffer them."""
+    global _crawler_log_lines
+    if stream is None:
+        return
+    for raw_line in stream:
+        line = raw_line.decode('utf-8', errors='replace').rstrip()
+        if line:
+            _crawler_log_lines.append(line)
+            logger.info("crawler: %s", line)
+
+
+def _stream_crawler_output(proc):
+    """Background thread: read crawler stdout/stderr in parallel."""
+    threads = []
+    for stream in (proc.stdout, proc.stderr):
+        t = threading.Thread(target=_read_stream, args=(stream,), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+
+class RunCrawlerView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def post(self, request):
+        global _crawler_process, _crawler_log_lines
+        with _crawler_lock:
+            if _crawler_process and _crawler_process.poll() is None:
+                logger.info("RunCrawlerView: crawler already running (pid=%d)", _crawler_process.pid)
+                return Response({"status": "already_running", "pid": _crawler_process.pid}, status=status.HTTP_409_CONFLICT)
+
+            logger.info("RunCrawlerView: starting crawler")
+            _crawler_log_lines = []
+            crawler_script = str(Path(settings.RDSO_STORAGE_ROOT) / 'rdso_site_crawler.py')
+            _crawler_process = subprocess.Popen(
+                [sys.executable, crawler_script, '--storage-root', str(settings.RDSO_STORAGE_ROOT)],
+                cwd=str(settings.RDSO_STORAGE_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            threading.Thread(target=_stream_crawler_output, args=(_crawler_process,), daemon=True).start()
+            return Response({"status": "started", "pid": _crawler_process.pid}, status=status.HTTP_202_ACCEPTED)
+
+
+class CrawlerStatusView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        global _crawler_process
+        running = _crawler_process is not None and _crawler_process.poll() is None
+
+        meta_path = Path(settings.RDSO_STORAGE_ROOT) / '__meta__.json'
+        meta_info = {}
+        if meta_path.exists():
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta_info = json.load(f)
+
+        totals = meta_info.get('totals', {})
+        logger.info("CrawlerStatusView: running=%s", running)
+        return Response({
+            "running": running,
+            "pid": _crawler_process.pid if _crawler_process else None,
+            "last_run": meta_info.get('generated_at_utc'),
+            "total_files": totals.get('file_count') or totals.get('files'),
+            "total_categories": totals.get('category_count') or totals.get('categories'),
+            "total_subheads": totals.get('subhead_count') or totals.get('subheads'),
+            "total_drawings": totals.get('drawing_count') or totals.get('drawings'),
+        }, status=status.HTTP_200_OK)
+
+
+class CrawlerLogsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        """Return crawler log lines. ?since=N returns lines after index N."""
+        since = int(request.query_params.get('since', 0))
+        lines = _crawler_log_lines[since:]
+        running = _crawler_process is not None and _crawler_process.poll() is None
+        return Response({
+            "running": running,
+            "offset": since + len(lines),
+            "lines": lines,
+        }, status=status.HTTP_200_OK)
+
+
+class ImportCatalogView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def post(self, request):
+        from django.core.management import call_command
+        from io import StringIO
+
+        logger.info("ImportCatalogView: triggered by %s", request.user.HRMS_ID)
+        out = StringIO()
+        call_command('import_rdso_catalog', stdout=out)
+        result = out.getvalue()
+        logger.info("ImportCatalogView: %s", result.strip())
+        return Response({"status": "ok", "output": result.strip()}, status=status.HTTP_200_OK)
