@@ -120,9 +120,9 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = Path('/home/pharmagaurd/RDSO/media')
 
-RDSO_STORAGE_ROOT = Path(os.environ.get('RDSO_STORAGE_ROOT', r'D:\RDSO'))
+RDSO_STORAGE_ROOT = Path(os.environ.get('RDSO_STORAGE_ROOT', '/home/pharmagaurd/RDSO/media/RDSO'))
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -154,16 +154,13 @@ REST_FRAMEWORK = {
     },
 }
 
-# CORS: restrictive in production, permissive in dev
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOW_ALL_ORIGINS = False
-    CORS_ALLOWED_ORIGINS = [
-        origin.strip()
-        for origin in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
-        if origin.strip()
-    ]
+
+# CORS: Always permissive
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = ['*']
+CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
+CORS_EXPOSE_HEADERS = ['*']
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'RailWay API',
