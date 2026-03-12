@@ -9,11 +9,6 @@ scrape_configs:
       - targets:
           - 127.0.0.1:7146
 
-  - job_name: backrail-redis-exporter
-    static_configs:
-      - targets:
-          - 127.0.0.1:9121
-
   - job_name: backrail-node-exporter
     static_configs:
       - targets:

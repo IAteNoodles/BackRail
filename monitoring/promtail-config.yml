@@ -22,8 +22,8 @@ scrape_configs:
       - source_labels: ['__journal__hostname']
         target_label: hostname
       - source_labels: ['__journal__systemd_unit']
-        regex: '(backrail-web|backrail-rqworker|nginx)\.service'
+        regex: '(backrail|backrail-rqworker|nginx|prometheus|loki|promtail|grafana-server|node_exporter)\.service'
         target_label: service
       - source_labels: ['__journal__systemd_unit']
-        regex: '(backrail-web|backrail-rqworker|nginx)\.service'
+        regex: '(backrail|backrail-rqworker|nginx|prometheus|loki|promtail|grafana-server|node_exporter)\.service'
         action: keep
