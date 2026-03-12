@@ -6,6 +6,7 @@ Usage:
     python deploy.py                  # Full setup + run
     python deploy.py --setup          # Setup only (venv, deps, migrate, static)
     python deploy.py --run            # Run production server only
+    python deploy.py --run-worker     # Run Redis-backed crawler worker
     python deploy.py --populate       # Populate mock data
     python deploy.py --host 0.0.0.0   # Bind to specific host
     python deploy.py --port 8000      # Bind to specific port
@@ -210,6 +211,16 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, dev: bool = False):
             )
 
 
+def run_worker(queue_name: str = "crawler"):
+    """Start a Django RQ worker for the given queue."""
+    if IS_WINDOWS:
+        log("Redis worker startup via django-rq is only supported in this script on Linux/macOS.", "ERR")
+        sys.exit(1)
+
+    log(f"Starting django-rq worker for queue '{queue_name}'...")
+    run_manage(["rqworker", queue_name])
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deploy BackRail backend server",
@@ -218,10 +229,12 @@ def main():
     )
     parser.add_argument("--setup", action="store_true", help="Run setup only (venv, deps, migrate, static)")
     parser.add_argument("--run", action="store_true", help="Run server only (skip setup)")
+    parser.add_argument("--run-worker", action="store_true", help="Run django-rq worker for the crawler queue")
     parser.add_argument("--populate", action="store_true", help="Populate mock data and exit")
     parser.add_argument("--dev", action="store_true", help="Development mode (DEBUG=True, Django runserver)")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000)")
+    parser.add_argument("--worker-queue", default="crawler", help="Queue name for --run-worker (default: crawler)")
 
     args = parser.parse_args()
 
@@ -241,6 +254,10 @@ def main():
     if args.run:
         kill_port(args.port)
         run_server(host=args.host, port=args.port, dev=args.dev)
+        return
+
+    if args.run_worker:
+        run_worker(queue_name=args.worker_queue)
         return
 
     # Default: full setup + run

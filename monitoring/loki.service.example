@@ -1,0 +1,17 @@
+[Unit]
+Description=BackRail Loki log aggregation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=loki
+Group=loki
+ExecStart=/usr/local/bin/loki -config.file=/home/pharmagaurd/RDSO/BackRail/monitoring/loki-config.yml
+WorkingDirectory=/home/pharmagaurd/RDSO/BackRail
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

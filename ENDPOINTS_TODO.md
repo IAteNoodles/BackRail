@@ -15,7 +15,7 @@ This checklist tracks the implementation of backend services as described in the
 ## 🔄 Data Synchronization (Offline Support)
 - [x] **Metadata Dump** (`GET /dump`)
   - [x] Incremental dump based on `last_synced` timestamp.
-  - [ ] Full dump mode (`diff=false`) — not yet implemented.
+  - [x] Full dump mode (`diff=false`) to force a full sync even when `last_synced` is provided.
 - [x] **Action Queue Synchronization** (`POST /actions/batch`) *(Deprecated)*
   - [x] Batch processing for client actions (Comments, Feedback) with per-item success/failure.
   - *Note: Kept for backward compatibility. Not actively used by frontend.*

@@ -1,0 +1,59 @@
+{
+  "title": "BackRail Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(django_http_requests_before_middlewares_total[5m])) by (method)",
+          "legendFormat": "{{method}}"
+        }
+      ]
+    },
+    {
+      "title": "Crawler Runs by Status",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(increase(railway_crawler_run_completions_total[1h])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Crawler Queue Depth",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "railway_crawler_queue_depth{queue_name=\"crawler\"}",
+          "legendFormat": "crawler"
+        }
+      ]
+    },
+    {
+      "title": "Redis Up",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "redis_up",
+          "legendFormat": "redis"
+        }
+      ]
+    },
+    {
+      "title": "Host CPU Utilization",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    }
+  ]
+}

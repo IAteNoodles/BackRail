@@ -1,0 +1,15 @@
+[Unit]
+Description=BackRail django-rq crawler worker
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=pharmagaurd
+WorkingDirectory=/home/pharmagaurd/RDSO/BackRail
+Environment=DJANGO_SETTINGS_MODULE=app.settings
+ExecStart=/home/pharmagaurd/RDSO/BackRail/stable-env/bin/python /home/pharmagaurd/RDSO/BackRail/deploy.py --run-worker --worker-queue crawler
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

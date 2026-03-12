@@ -1,0 +1,17 @@
+[Unit]
+Description=BackRail Django web service
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=pharmagaurd
+WorkingDirectory=/home/pharmagaurd/RDSO/BackRail/backend/app
+Environment=APP_ENV=production
+Environment=DJANGO_SETTINGS_MODULE=app.settings
+Environment=LOG_JSON=true
+ExecStart=/home/pharmagaurd/RDSO/BackRail/stable-env/bin/gunicorn app.wsgi:application --bind 127.0.0.1:7146 --workers 3 --access-logfile - --error-logfile -
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

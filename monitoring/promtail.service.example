@@ -1,0 +1,15 @@
+[Unit]
+Description=BackRail Promtail log shipper
+After=network-online.target loki.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/promtail -config.file=/home/pharmagaurd/RDSO/BackRail/monitoring/promtail-config.yml
+WorkingDirectory=/home/pharmagaurd/RDSO/BackRail
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

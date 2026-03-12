@@ -1,6 +1,7 @@
 import io
 import os
 import logging
+import time
 
 from django.conf import settings
 from django.http import FileResponse
@@ -12,6 +13,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as rl_canvas
 from pypdf import PdfReader, PdfWriter
 
+from .metrics import record_file_serve
 from .models import AuditLog
 
 logger = logging.getLogger("users")
@@ -52,6 +54,9 @@ def watermark_pdf(pdf_path, watermark_text):
 
 def serve_file(document, hrms_id, as_download=False):
     """Stream the file for a Document. Supports RDSO storage or legacy media path."""
+    started_at = time.perf_counter()
+    mode = 'download' if as_download else 'inline'
+
     if document.storage_path and document.file_name_on_disk:
         file_path = os.path.join(
             str(settings.RDSO_STORAGE_ROOT),
@@ -69,10 +74,12 @@ def serve_file(document, hrms_id, as_download=False):
     resolved = os.path.realpath(file_path)
     if not resolved.startswith(allowed_root):
         logger.warning("serve_file: path traversal blocked for %s", document.document_id)
+        record_file_serve('invalid_path', mode, document.content_type, time.perf_counter() - started_at)
         return Response({"detail": "Invalid document path"}, status=status.HTTP_403_FORBIDDEN)
 
     if not os.path.isfile(file_path):
         logger.warning("serve_file: file not found at %s", file_path)
+        record_file_serve('not_found', mode, document.content_type, time.perf_counter() - started_at)
         return Response({"detail": "File not found"}, status=status.HTTP_404_NOT_FOUND)
 
     file_size = os.path.getsize(file_path)
@@ -95,8 +102,10 @@ def serve_file(document, hrms_id, as_download=False):
             disposition = 'inline'
     except Exception as e:
         logger.error("serve_file: processing error for %s: %s", document.document_id, e)
+        record_file_serve('processing_error', mode, ct, time.perf_counter() - started_at)
         return Response({"detail": f"File processing error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    record_file_serve('served', mode, ct, time.perf_counter() - started_at)
     response = FileResponse(file_to_serve, content_type=ct)
     response['Content-Disposition'] = f'{disposition}; filename="{safe_name}"'
     return response

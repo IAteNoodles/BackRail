@@ -118,6 +118,52 @@ class Post(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+
+class CrawlerRun(models.Model):
+    STATUS_QUEUED = 'queued'
+    STATUS_RUNNING = 'running'
+    STATUS_SUCCEEDED = 'succeeded'
+    STATUS_FAILED = 'failed'
+
+    EXECUTION_QUEUE = 'queue'
+    EXECUTION_THREAD = 'thread'
+
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, 'Queued'),
+        (STATUS_RUNNING, 'Running'),
+        (STATUS_SUCCEEDED, 'Succeeded'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    EXECUTION_MODE_CHOICES = [
+        (EXECUTION_QUEUE, 'Queue'),
+        (EXECUTION_THREAD, 'Thread'),
+    ]
+
+    initiated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='crawler_runs')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED)
+    execution_mode = models.CharField(max_length=20, choices=EXECUTION_MODE_CHOICES, default=EXECUTION_QUEUE)
+    job_id = models.CharField(max_length=255, blank=True, default='')
+    storage_root = models.CharField(max_length=1000, blank=True, default='')
+    pid = models.IntegerField(null=True, blank=True)
+    queued_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    last_heartbeat = models.DateTimeField(null=True, blank=True)
+    exit_code = models.IntegerField(null=True, blank=True)
+    total_log_lines = models.IntegerField(default=0)
+    error_message = models.TextField(blank=True, default='')
+    log_tail = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"CrawlerRun#{self.pk} {self.status}"
+
+    class Meta:
+        ordering = ['-created_at']
+
 class AuditLog(models.Model):
     ACTION_CHOICES = [
         ('user_login', 'User Login'),

@@ -11,22 +11,41 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
+from datetime import timedelta
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
+TESTING = 'test' in sys.argv
+IS_WINDOWS = sys.platform.startswith('win')
+APP_ENV = os.environ.get('APP_ENV', 'development').lower()
+IS_PRODUCTION = APP_ENV == 'production'
+SERVICE_NAME = os.environ.get('SERVICE_NAME', 'railway-backend')
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+
+
+def _env_list(name, default=''):
+    raw_value = os.environ.get(name, default)
+    return [item.strip() for item in raw_value.split(',') if item.strip()]
+
 SECRET_KEY = os.environ['DJANGO_SECRET_KEY']
 
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+ALLOWED_HOSTS = _env_list(
+    'ALLOWED_HOSTS',
+    '127.0.0.1,localhost,testserver' if DEBUG or TESTING else ''
+)
 
 
 # Application definition
 
 INSTALLED_APPS = [
+    'django_prometheus',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -41,14 +60,17 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'django_prometheus.middleware.PrometheusBeforeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'app.observability.RequestContextMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'django_prometheus.middleware.PrometheusAfterMiddleware',
 ]
 
 ROOT_URLCONF = 'app.urls'
@@ -76,8 +98,9 @@ WSGI_APPLICATION = 'app.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
+        'ENGINE': 'django_prometheus.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
     }
 }
 
@@ -120,7 +143,7 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
-MEDIA_ROOT = Path('/home/pharmagaurd/RDSO/media')
+MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT', '/home/pharmagaurd/RDSO/media'))
 
 RDSO_STORAGE_ROOT = Path(os.environ.get('RDSO_STORAGE_ROOT', '/home/pharmagaurd/RDSO/media/RDSO'))
 
@@ -131,8 +154,54 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = "users.User"
 
-import sys
-TESTING = 'test' in sys.argv
+REDIS_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
+USE_REDIS = os.environ.get('USE_REDIS', 'False' if TESTING else 'True').lower() == 'true'
+DJANGO_RQ_ENABLED = os.environ.get('DJANGO_RQ_ENABLED', 'False' if IS_WINDOWS or TESTING else 'True').lower() == 'true'
+CRAWLER_USE_QUEUE = os.environ.get('CRAWLER_USE_QUEUE', 'False' if TESTING or not DJANGO_RQ_ENABLED else 'True').lower() == 'true'
+CRAWLER_FALLBACK_TO_THREAD = os.environ.get('CRAWLER_FALLBACK_TO_THREAD', 'True').lower() == 'true'
+CRAWLER_JOB_TIMEOUT = int(os.environ.get('CRAWLER_JOB_TIMEOUT', '7200'))
+CRAWLER_LOG_TAIL_LIMIT = int(os.environ.get('CRAWLER_LOG_TAIL_LIMIT', '500'))
+CRAWLER_LOG_CACHE_TTL = int(os.environ.get('CRAWLER_LOG_CACHE_TTL', '86400'))
+PROMETHEUS_METRICS_ENABLED = os.environ.get('PROMETHEUS_METRICS_ENABLED', 'True').lower() == 'true'
+PROMETHEUS_METRICS_PATH = os.environ.get('PROMETHEUS_METRICS_PATH', 'metrics/')
+PROMETHEUS_MULTIPROC_DIR = os.environ.get('PROMETHEUS_MULTIPROC_DIR', '')
+LOG_JSON = os.environ.get('LOG_JSON', 'True' if IS_PRODUCTION else 'False').lower() == 'true'
+
+if PROMETHEUS_MULTIPROC_DIR:
+    os.environ['PROMETHEUS_MULTIPROC_DIR'] = PROMETHEUS_MULTIPROC_DIR
+
+if USE_REDIS:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            },
+            'KEY_PREFIX': 'railway',
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'railway-local-cache',
+        }
+    }
+
+RQ_QUEUES = {
+    'default': {
+        'URL': REDIS_URL,
+        'DEFAULT_TIMEOUT': CRAWLER_JOB_TIMEOUT,
+    },
+    'crawler': {
+        'URL': REDIS_URL,
+        'DEFAULT_TIMEOUT': CRAWLER_JOB_TIMEOUT,
+    },
+}
+
+if DJANGO_RQ_ENABLED:
+    INSTALLED_APPS.append('django_rq')
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -142,8 +211,6 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "PAGE_SIZE": 50,
     "DEFAULT_THROTTLE_CLASSES": [] if TESTING else [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
@@ -155,20 +222,49 @@ REST_FRAMEWORK = {
 }
 
 
-# CORS: Always permissive
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS stays configurable, but production defaults to explicit origin allowlists.
+CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'True' if DEBUG else 'False').lower() == 'true'
+CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_HEADERS = ['*']
-CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
-CORS_EXPOSE_HEADERS = ['*']
+CORS_ALLOW_HEADERS = _env_list('CORS_ALLOW_HEADERS', '*')
+CORS_ALLOW_METHODS = _env_list('CORS_ALLOW_METHODS', 'DELETE,GET,OPTIONS,PATCH,POST,PUT')
+CORS_EXPOSE_HEADERS = _env_list('CORS_EXPOSE_HEADERS', '*')
+CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')
+
+SECURE_SSL_REDIRECT = os.environ.get(
+    'SECURE_SSL_REDIRECT',
+    'True' if IS_PRODUCTION and not TESTING else 'False'
+).lower() == 'true'
+SESSION_COOKIE_SECURE = os.environ.get(
+    'SESSION_COOKIE_SECURE',
+    'True' if IS_PRODUCTION and not TESTING else 'False'
+).lower() == 'true'
+CSRF_COOKIE_SECURE = os.environ.get(
+    'CSRF_COOKIE_SECURE',
+    'True' if IS_PRODUCTION and not TESTING else 'False'
+).lower() == 'true'
+SESSION_COOKIE_SAMESITE = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
+CSRF_COOKIE_SAMESITE = os.environ.get('CSRF_COOKIE_SAMESITE', 'Lax')
+USE_X_FORWARDED_HOST = os.environ.get(
+    'USE_X_FORWARDED_HOST',
+    'True' if IS_PRODUCTION else 'False'
+).lower() == 'true'
+if os.environ.get('USE_X_FORWARDED_PROTO', 'True' if IS_PRODUCTION else 'False').lower() == 'true':
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_HSTS_SECONDS = int(
+    os.environ.get('SECURE_HSTS_SECONDS', '31536000' if IS_PRODUCTION and not TESTING else '0')
+)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.environ.get('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'True').lower() == 'true'
+SECURE_HSTS_PRELOAD = os.environ.get('SECURE_HSTS_PRELOAD', 'True').lower() == 'true'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = os.environ.get('SECURE_REFERRER_POLICY', 'strict-origin-when-cross-origin')
+X_FRAME_OPTIONS = os.environ.get('X_FRAME_OPTIONS', 'DENY')
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'RailWay API',
     'DESCRIPTION': 'HRMS Document Management & Feedback API',
     'VERSION': '1.0.0',
 }
-
-from datetime import timedelta
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
@@ -179,10 +275,20 @@ SIMPLE_JWT = {
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'request_context': {
+            '()': 'app.observability.RequestContextFilter',
+        },
+        'service_context': {
+            '()': 'app.observability.StaticContextFilter',
+            'service_name': SERVICE_NAME,
+            'environment': APP_ENV,
+        },
+    },
     'formatters': {
         'verbose': {
             '()': 'colorlog.ColoredFormatter',
-            'format': '%(log_color)s[%(levelname)s]%(reset)s %(asctime)s %(cyan)s%(name)s%(reset)s: %(message)s',
+            'format': '%(log_color)s[%(levelname)s]%(reset)s %(asctime)s %(cyan)s%(name)s%(reset)s [%(request_id)s] %(message)s',
             'style': '%',
             'log_colors': {
                 'DEBUG': 'blue',
@@ -192,36 +298,41 @@ LOGGING = {
                 'CRITICAL': 'bold_red',
             },
         },
+        'json': {
+            '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s %(service)s %(environment)s %(request_id)s %(request_method)s %(request_path)s',
+        },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
+            'formatter': 'json' if LOG_JSON else 'verbose',
+            'filters': ['request_context', 'service_context'],
         },
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level': LOG_LEVEL,
     },
     'loggers': {
         'users': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': LOG_LEVEL,
             'propagate': False,
         },
         'django.request': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': LOG_LEVEL,
             'propagate': False,
         },
         'django.server': {
             'handlers': ['console'],
-            'level': 'INFO',
+            'level': LOG_LEVEL,
             'propagate': False,
         },
         'django.db.backends': {
             'handlers': ['console'],
-            'level': 'INFO',
+            'level': os.environ.get('DJANGO_DB_LOG_LEVEL', 'INFO').upper(),
             'propagate': False,
         },
     },

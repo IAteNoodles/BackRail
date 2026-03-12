@@ -10,15 +10,17 @@ Run with:
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from dotenv import load_dotenv
 
 from django.test import TestCase
+from django.test.utils import override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 from rest_framework import status as http_status
 
-from users.models import User, Document, Category, Post, AuditLog
+from users.models import AuditLog, Category, CrawlerRun, Document, Post, User
 
 # ---------------------------------------------------------------------------
 # Admin credentials loaded from .env
@@ -331,25 +333,25 @@ class RegistrationListTests(APITestMixin, TestCase):
         resp = c.get(reverse("registration-list"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
         # admin + 3 users = 4
-        self.assertEqual(resp.data["count"], 4)
+        self.assertEqual(len(resp.data), 4)
 
     def test_filter_pending(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"), {"filter": "pending"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        for u in resp.data["results"]:
+        for u in resp.data:
             self.assertEqual(u["user_status"], "pending")
 
     def test_filter_accepted(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"), {"filter": "accepted"})
-        for u in resp.data["results"]:
+        for u in resp.data:
             self.assertEqual(u["user_status"], "accepted")
 
     def test_filter_rejected(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"), {"filter": "rejected"})
-        for u in resp.data["results"]:
+        for u in resp.data:
             self.assertEqual(u["user_status"], "rejected")
 
     def test_list_as_regular_user_forbidden(self):
@@ -525,15 +527,25 @@ class DocumentListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("document-list"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(resp.data["count"], 2)
-        self.assertEqual(len(resp.data["results"]), 2)
+        self.assertEqual(len(resp.data), 2)
 
     def test_list_filtered(self):
         c = self._user_client()
         resp = c.get(reverse("document-list"), {"document_ids": "DOC-A"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(resp.data["count"], 1)
-        self.assertEqual(resp.data["results"][0]["document_id"], "DOC-A")
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["document_id"], "DOC-A")
+
+    def test_list_filtered_by_category(self):
+        self.doc1.category.add(Category.objects.create(name="Safety"))
+        self.doc2.category.add(Category.objects.create(name="General"))
+
+        c = self._user_client()
+        resp = c.get(reverse("document-list"), {"category": "Safety"})
+
+        self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["document_id"], "DOC-A")
 
     def test_download_returns_400_without_document_id(self):
         c = self._user_client()
@@ -574,6 +586,7 @@ class DumpTests(APITestMixin, TestCase):
         self.assertIn("documents", resp.data)
         self.assertIn("categories", resp.data)
         self.assertIn("timestamp", resp.data)
+        self.assertEqual(resp.data["mode"], "full")
         self.assertGreaterEqual(len(resp.data["documents"]), 1)
 
     def test_dump_with_last_synced(self):
@@ -581,7 +594,25 @@ class DumpTests(APITestMixin, TestCase):
         # Fetch with a future timestamp - should return nothing
         resp = c.get(reverse("dump"), {"last_synced": "2099-01-01T00:00:00Z"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(resp.data["mode"], "incremental")
         self.assertEqual(len(resp.data["documents"]), 0)
+
+    def test_dump_force_full_with_diff_false(self):
+        c = self._user_client()
+        resp = c.get(reverse("dump"), {"last_synced": "2099-01-01T00:00:00Z", "diff": "false"})
+        self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(resp.data["mode"], "full")
+        self.assertGreaterEqual(len(resp.data["documents"]), 1)
+
+    def test_dump_invalid_diff_rejected(self):
+        c = self._user_client()
+        resp = c.get(reverse("dump"), {"diff": "maybe"})
+        self.assertEqual(resp.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    def test_dump_invalid_last_synced_rejected(self):
+        c = self._user_client()
+        resp = c.get(reverse("dump"), {"last_synced": "not-a-date"})
+        self.assertEqual(resp.status_code, http_status.HTTP_400_BAD_REQUEST)
 
     def test_dump_unauthenticated(self):
         resp = self._anon_client().get(reverse("dump"))
@@ -699,7 +730,7 @@ class PostListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("post-list"), {"document_id": "DOC-PL"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(resp.data["count"], 2)
+        self.assertEqual(len(resp.data), 2)
 
     def test_missing_document_param(self):
         c = self._user_client()
@@ -711,7 +742,7 @@ class PostListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("post-list"), {"document_id": "DOC-OTHER"})
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(resp.data["count"], 0)
+        self.assertEqual(len(resp.data), 0)
 
 
 # ===================================================================
@@ -735,8 +766,8 @@ class FeedbackListTests(APITestMixin, TestCase):
         c = self._user_client()
         resp = c.get(reverse("feedback-list", kwargs={"document_id": "DOC-FB"}))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(resp.data["count"], 1)
-        self.assertEqual(resp.data["results"][0]["post_type"], "feedback")
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["post_type"], "feedback")
 
     def test_nonexistent_document(self):
         c = self._user_client()
@@ -837,7 +868,7 @@ class AuditLogViewTests(APITestMixin, TestCase):
         c = self._admin_client()
         resp = c.get(reverse("document-logs"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        for log in resp.data["results"]:
+        for log in resp.data:
             self.assertEqual(log["target_type"], "document")
 
     def test_document_logs_as_regular_user_forbidden(self):
@@ -849,7 +880,7 @@ class AuditLogViewTests(APITestMixin, TestCase):
         c = self._admin_client()
         resp = c.get(reverse("user-logs"))
         self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
-        for log in resp.data["results"]:
+        for log in resp.data:
             self.assertEqual(log["target_type"], "user")
 
     def test_user_logs_unauthenticated(self):
@@ -859,7 +890,7 @@ class AuditLogViewTests(APITestMixin, TestCase):
     def test_document_logs_ordered_newest_first(self):
         c = self._admin_client()
         resp = c.get(reverse("document-logs"))
-        results = resp.data["results"]
+        results = resp.data
         if len(results) >= 2:
             self.assertGreaterEqual(
                 results[0]["created_at"], results[1]["created_at"]
@@ -867,7 +898,74 @@ class AuditLogViewTests(APITestMixin, TestCase):
 
 
 # ===================================================================
-# O.  SECURITY EDGE CASE TESTS
+# O.  CRAWLER ADMIN TESTS
+# ===================================================================
+class CrawlerAdminTests(APITestMixin, TestCase):
+    def setUp(self):
+        self._create_admin()
+        self._create_users()
+
+    @override_settings(CRAWLER_USE_QUEUE=False)
+    @patch('users.crawler.execute_crawler_run')
+    def test_run_crawler_starts_thread_mode(self, mocked_execute):
+        c = self._admin_client()
+        resp = c.post(reverse('run-crawler'))
+        self.assertEqual(resp.status_code, http_status.HTTP_202_ACCEPTED)
+        self.assertEqual(resp.data['status'], 'started')
+        run = CrawlerRun.objects.get(pk=resp.data['run_id'])
+        self.assertEqual(run.execution_mode, CrawlerRun.EXECUTION_THREAD)
+        mocked_execute.assert_called_once_with(run.id)
+
+    def test_run_crawler_returns_conflict_when_active_run_exists(self):
+        CrawlerRun.objects.create(
+            initiated_by=self.admin,
+            status=CrawlerRun.STATUS_RUNNING,
+            execution_mode=CrawlerRun.EXECUTION_THREAD,
+        )
+        c = self._admin_client()
+        resp = c.post(reverse('run-crawler'))
+        self.assertEqual(resp.status_code, http_status.HTTP_409_CONFLICT)
+        self.assertEqual(resp.data['status'], 'already_running')
+
+    def test_crawler_status_returns_latest_run(self):
+        run = CrawlerRun.objects.create(
+            initiated_by=self.admin,
+            status=CrawlerRun.STATUS_FAILED,
+            execution_mode=CrawlerRun.EXECUTION_THREAD,
+            error_message='boom',
+            total_log_lines=2,
+        )
+        c = self._admin_client()
+        resp = c.get(reverse('crawler-status'))
+        self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(resp.data['run_id'], run.id)
+        self.assertEqual(resp.data['status'], CrawlerRun.STATUS_FAILED)
+        self.assertEqual(resp.data['error'], 'boom')
+
+    def test_crawler_logs_return_tail_and_offset(self):
+        run = CrawlerRun.objects.create(
+            initiated_by=self.admin,
+            status=CrawlerRun.STATUS_RUNNING,
+            execution_mode=CrawlerRun.EXECUTION_THREAD,
+            total_log_lines=3,
+            log_tail=['one', 'two', 'three'],
+        )
+        c = self._admin_client()
+        resp = c.get(reverse('crawler-logs'), {'run_id': run.id, 'since': 1})
+        self.assertEqual(resp.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(resp.data['run_id'], run.id)
+        self.assertEqual(resp.data['offset'], 3)
+        self.assertEqual(resp.data['lines'], ['two', 'three'])
+
+    def test_regular_user_cannot_manage_crawler(self):
+        c = self._user_client()
+        self.assertEqual(c.post(reverse('run-crawler')).status_code, http_status.HTTP_403_FORBIDDEN)
+        self.assertEqual(c.get(reverse('crawler-status')).status_code, http_status.HTTP_403_FORBIDDEN)
+        self.assertEqual(c.get(reverse('crawler-logs')).status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ===================================================================
+# P.  SECURITY EDGE CASE TESTS
 # ===================================================================
 class SecurityTests(APITestMixin, TestCase):
     def setUp(self):
@@ -966,7 +1064,7 @@ class SecurityTests(APITestMixin, TestCase):
     def test_user_list_password_not_exposed(self):
         c = self._admin_client()
         resp = c.get(reverse("registration-list"))
-        for u in resp.data["results"]:
+        for u in resp.data:
             self.assertNotIn("password", u)
 
     # -- registration creates pending user ----------------------------------

@@ -45,7 +45,7 @@ A full-stack railway HRMS document management system with a Django REST API back
 - **PDF Viewing & Watermarked Download** — In-app PDF viewer with watermarked downloads stamped with user's HRMS ID and timestamp.
 - **Posts & Feedback** — Users can post comments or feedback against documents, with nested reply support.
 - **Batch Action Queue** — Offline-first clients can sync multiple actions (comments/feedback) in a single request.
-- **Incremental Data Dump** — `GET /api/dump/` supports a `last_synced` timestamp to fetch only updated documents.
+- **Data Dump Contract** — `GET /api/dump/` supports full or incremental sync, including `diff=false` to force a full dump even when `last_synced` is present.
 - **Audit Logging** — Every login, status change, document creation, download, and post is recorded in `AuditLog`.
 - **Admin Dashboard** — Admin screens for user management, audit logs, and document administration.
 - **Cross-Platform Frontend** — Flutter app runs on Web (Chrome), Windows, and Android.
@@ -61,12 +61,13 @@ A full-stack railway HRMS document management system with a Django REST API back
 | Auth | `djangorestframework-simplejwt` (JWT) |
 | CORS | `django-cors-headers` |
 | API Docs | `drf-spectacular` (OpenAPI 3 / Swagger UI) |
+| Metrics | `django-prometheus` + Prometheus scrape endpoint |
 | Database | SQLite (development) |
 | PDF Tools | `reportlab` (generation), `pypdf` (watermarking), `pillow` |
 | Production Server | `waitress` (Windows) / `gunicorn` (Linux/macOS) |
 | Frontend | Flutter (Dart) — Web, Windows, Android |
 | UI Kit | `ux4g` design system |
-| Logging | `colorlog` (coloured console output) |
+| Logging | `colorlog` locally, structured JSON logs in production for Loki |
 
 ---
 
@@ -132,6 +133,9 @@ python deploy.py
 # Development mode (DEBUG=True, Django runserver)
 python deploy.py --dev
 
+# Run Redis-backed crawler worker (Linux/macOS deployment path)
+python deploy.py --run-worker --worker-queue crawler
+
 # Setup only (install deps, migrate, collect static)
 python deploy.py --setup
 
@@ -151,10 +155,12 @@ python deploy.py --host 0.0.0.0 --port 8000
 |---|---|
 | `--setup` | Setup only: create venv, install deps, migrate, collect static |
 | `--run` | Run server only (skip setup) |
+| `--run-worker` | Run the django-rq worker for a queue (Linux/macOS path) |
 | `--populate` | Populate mock data and exit |
 | `--dev` | Development mode (DEBUG=True, Django runserver) |
 | `--host` | Host to bind (default: `0.0.0.0`) |
 | `--port` | Port to bind (default: `8000`) |
+| `--worker-queue` | Queue name used with `--run-worker` (default: `crawler`) |
 
 ### Test Credentials (after `--populate`)
 
@@ -201,18 +207,82 @@ Create a `.env` file inside `backend/app/`:
 ```env
 DJANGO_SECRET_KEY=your-secret-key-here
 DEBUG=True
+ALLOWED_HOSTS=127.0.0.1,localhost
+APP_ENV=production
+CORS_ALLOW_ALL_ORIGINS=False
+CORS_ALLOWED_ORIGINS=https://app.example.com
+CSRF_TRUSTED_ORIGINS=https://app.example.com
+SECURE_SSL_REDIRECT=True
+SESSION_COOKIE_SECURE=True
+CSRF_COOKIE_SECURE=True
+LOG_JSON=True
 
 # Admin superuser credentials (also used by tests)
 HRMS_ID=1
 password=your-admin-password
+REDIS_URL=redis://127.0.0.1:6379/0
+PROMETHEUS_METRICS_ENABLED=True
+PROMETHEUS_METRICS_PATH=metrics/
 ```
 
 | Variable | Required | Description |
 |---|---|---|
 | `DJANGO_SECRET_KEY` | Yes | Django secret key for cryptographic signing |
 | `DEBUG` | No | `True` for development (defaults to `False`) |
+| `ALLOWED_HOSTS` | No | Comma-separated Django allowed hosts list |
+| `APP_ENV` | No | Deployment mode used for production security and logging defaults (`development` or `production`) |
+| `CORS_ALLOW_ALL_ORIGINS` | No | `True` keeps the backend permissive; set `False` to enforce `CORS_ALLOWED_ORIGINS` |
+| `CORS_ALLOWED_ORIGINS` | No | Comma-separated allowed origins used when `CORS_ALLOW_ALL_ORIGINS=False` |
+| `CSRF_TRUSTED_ORIGINS` | No | Comma-separated trusted HTTPS origins for Django CSRF validation |
 | `HRMS_ID` | No | Admin HRMS ID used by the test suite |
 | `password` | No | Admin password used by the test suite |
+| `REDIS_URL` | No | Redis connection string for upcoming crawler, cache, and sync work |
+| `DJANGO_RQ_ENABLED` | No | Enables django-rq integration where the platform supports it |
+| `CRAWLER_USE_QUEUE` | No | Enables queue-backed crawler execution instead of thread fallback |
+| `PROMETHEUS_METRICS_ENABLED` | No | Enables the Prometheus scrape endpoint (defaults to `True`) |
+| `PROMETHEUS_METRICS_PATH` | No | Relative URL path for the metrics endpoint (defaults to `metrics/`) |
+| `LOG_JSON` | No | Emits JSON logs for Loki and Promtail ingestion; defaults to `True` in production |
+| `LOG_LEVEL` | No | Root application log level (defaults to `INFO`) |
+| `SECURE_SSL_REDIRECT` | No | Forces HTTPS redirects in production |
+
+### Monitoring
+
+- Prometheus metrics are exposed at `/metrics/` by default.
+- `django-prometheus` instruments Django request and database activity automatically.
+- The backend also exposes custom application metrics for crawler launch attempts, crawler log throughput, catalog import duration, dump request volume, and file serving outcomes.
+- In a multi-process deployment such as Gunicorn, configure Prometheus multiprocess collection before relying on aggregated worker metrics.
+- Production logging now emits request-aware JSON records that are ready for Loki via Promtail.
+
+Production note:
+
+- The current default remains permissive for CORS to preserve compatibility, but the backend now supports environment-driven tightening without code changes.
+
+### Worker Deployment
+
+- The crawler endpoints can now persist run state and use Redis-backed queue execution when `DJANGO_RQ_ENABLED=True` and `CRAWLER_USE_QUEUE=True`.
+- On Windows and during tests, the backend intentionally falls back to thread mode so startup and local development remain stable.
+- For Linux deployment, use `python deploy.py --run-worker --worker-queue crawler` or a systemd service based on [RailWay/monitoring/backrail-rqworker.service.example](RailWay/monitoring/backrail-rqworker.service.example).
+
+### Monitoring Deployment Assets
+
+- Example Prometheus scrape config: [RailWay/monitoring/prometheus.yml](RailWay/monitoring/prometheus.yml)
+- Example Loki config: [RailWay/monitoring/loki-config.yml](RailWay/monitoring/loki-config.yml)
+- Example Promtail config: [RailWay/monitoring/promtail-config.yml](RailWay/monitoring/promtail-config.yml)
+- Example worker service: [RailWay/monitoring/backrail-rqworker.service.example](RailWay/monitoring/backrail-rqworker.service.example)
+- Example web service: [RailWay/monitoring/backrail-web.service.example](RailWay/monitoring/backrail-web.service.example)
+- Example Loki service: [RailWay/monitoring/loki.service.example](RailWay/monitoring/loki.service.example)
+- Example Promtail service: [RailWay/monitoring/promtail.service.example](RailWay/monitoring/promtail.service.example)
+- Example node exporter service: [RailWay/monitoring/node_exporter.service.example](RailWay/monitoring/node_exporter.service.example)
+- Example redis exporter service: [RailWay/monitoring/redis_exporter.service.example](RailWay/monitoring/redis_exporter.service.example)
+- Example Grafana dashboard: [RailWay/monitoring/grafana/backrail-overview.dashboard.json](RailWay/monitoring/grafana/backrail-overview.dashboard.json)
+
+Recommended Linux VM deployment layout:
+
+- `gunicorn` serves Django on `127.0.0.1:7146`
+- `nginx` terminates TLS and proxies to Gunicorn
+- `redis` backs cache and crawler queue state
+- `prometheus` scrapes Django, Redis exporter, and node exporter
+- `loki` stores logs and `promtail` ships journal entries for the web, worker, and nginx services
 
 ### Database Setup
 
@@ -431,6 +501,14 @@ The download endpoint stamps each PDF with: `Downloaded by <HRMS_ID> at <timesta
 |---|---|---|---|
 | `GET` | `/api/dump/` | Accepted User | Full dump of documents and categories |
 | `GET` | `/api/dump/?last_synced=<ISO-timestamp>` | Accepted User | Incremental dump (only documents updated after the given timestamp) |
+| `GET` | `/api/dump/?last_synced=<ISO-timestamp>&diff=false` | Accepted User | Forced full dump while preserving the client timestamp parameter |
+
+Response notes:
+
+- `mode` is `full` or `incremental`.
+- `filters.last_synced` echoes the request value.
+- `filters.diff` reflects the parsed diff mode.
+- `document_count` exposes the number of documents included in the response.
 
 ### Audit Logs
 
